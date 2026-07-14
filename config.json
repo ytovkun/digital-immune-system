@@ -1,0 +1,50 @@
+{
+  "helios": {
+    "base_url": "http://localhost:8001",
+    "election_uuid": "set-in-config.local.json",
+    "voters": {
+      "voter1": "set-in-config.local.json",
+      "voter2": "set-in-config.local.json",
+      "voter3": "set-in-config.local.json",
+      "voter4": "set-in-config.local.json",
+      "voter5": "set-in-config.local.json"
+    },
+    "voter_uuids": {
+      "voter1": "set-in-config.local.json",
+      "voter2": "set-in-config.local.json",
+      "voter3": "set-in-config.local.json",
+      "voter4": "set-in-config.local.json",
+      "voter5": "set-in-config.local.json"
+    }
+  },
+  "claude": {
+    "model": "claude-opus-4-8",
+    "max_tokens": 7000,
+    "judge_max_tokens": 2048,
+    "effort": "low"
+  },
+  "immune_proxy": {
+    "listen_host": "127.0.0.1",
+    "listen_port": 8000,
+    "helios_backend": "http://localhost:8001",
+    "max_body_bytes": 5242880,
+    "coarsen_ballot_timestamps": true,
+    "security_headers_enabled": true,
+    "stats_token": "",
+    "verbose_blocks": true,
+    "backstop_body_bytes": 65536,
+    "exfil_soft_bytes": 262144,
+    "exfil_hard_bytes": 0
+  },
+  "paths": {
+    "scenarios_dir": "scenarios",
+    "reports_dir": "reports",
+    "logs_dir": "logs"
+  },
+  "run": {
+    "vectors": ["system", "voter"],
+    "attack_classes": "all",
+    "step_delay_sec": 0.3,
+    "http_timeout_sec": 10
+  }
+}

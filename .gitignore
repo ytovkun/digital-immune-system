@@ -1,0 +1,32 @@
+# Віртуальне середовище
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Claude Code
+.claude/
+
+# Генеровані артефакти (регенеруються при запуску)
+logs/
+reports/
+scenarios/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Секрети (ключі API + локальні паролі виборців)
+.env
+config.local.json

@@ -1,0 +1,20 @@
+{
+  "_comment": "Локальні дані твоєї тестової виборки Helios (секрети + ідентифікатори). Скопіюй у config.local.json і впиши реальні значення. config.local.json у .gitignore — у репозиторій не потрапляє. Значення тут перекривають config.json (deep-merge у env_loader.load_config).",
+  "helios": {
+    "election_uuid": "UUID-ТВОЇХ-ВИБОРІВ",
+    "voters": {
+      "voter1": "ВАШ_ПАРОЛЬ",
+      "voter2": "ВАШ_ПАРОЛЬ",
+      "voter3": "ВАШ_ПАРОЛЬ",
+      "voter4": "ВАШ_ПАРОЛЬ",
+      "voter5": "ВАШ_ПАРОЛЬ"
+    },
+    "voter_uuids": {
+      "voter1": "UUID-ВИБОРЦЯ-1",
+      "voter2": "UUID-ВИБОРЦЯ-2",
+      "voter3": "UUID-ВИБОРЦЯ-3",
+      "voter4": "UUID-ВИБОРЦЯ-4",
+      "voter5": "UUID-ВИБОРЦЯ-5"
+    }
+  }
+}

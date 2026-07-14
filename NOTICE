@@ -1,0 +1,26 @@
+Digital Immune System for Smart E-State (GenAI threat modeling)
+Copyright 2026 Yuliia Tovkun
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+------------------------------------------------------------------------
+Third-party software this project interoperates with / targets:
+------------------------------------------------------------------------
+
+Helios Voting (helios-server)
+  Author: Ben Adida and contributors
+  Source: https://github.com/benadida/helios-server
+  License: Apache License 2.0
+
+  This project does NOT bundle or redistribute Helios source code. It runs
+  as a separate work against a locally-deployed Helios test instance — the
+  offensive side models attacks on Helios, and the defensive side (inline
+  immune proxy) protects a Helios backend. All references to Helios
+  endpoints, views, and documented vulnerabilities are for academic
+  security research within the scope of a doctoral dissertation.
+
+Anthropic Claude (anthropic Python SDK)
+  Source: https://github.com/anthropics/anthropic-sdk-python
+  License: MIT
+  Used as the GenAI core for both attack generation and the inline
+  AI-based defense analyst.

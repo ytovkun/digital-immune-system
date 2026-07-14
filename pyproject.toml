@@ -1,0 +1,16 @@
+[project]
+name = "digital-immune-system"
+version = "1.0.0"
+description = "Цифрова імунна система розумної е-держави на основі GenAI-моделювання кіберзагроз (захист Helios e-voting)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [{ name = "Yuliia Tovkun", email = "ytovkun@gmail.com" }]
+
+# Залежності винесено в requirements.txt (pip install -r requirements.txt)
+
+[tool.pytest.ini_options]
+# Збираємо лише tests/ — щоб standalone-скрипти immune_system/*_test.py
+# (демо для живого сервера) не потрапляли під дефолтний патерн pytest "*_test.py".
+testpaths = ["tests"]
+addopts = "-q"
