@@ -43,6 +43,15 @@ SIEM_APT_NOTE = ("0/3 за побудовою: сигнатурний SIEM не 
                  "багатокрокову траєкторію (recon→дія); окремі кроки APT без payload "
                  "не тригерять web-attack правила — це структурне обмеження, не вимір.")
 
+# Пояснення, ЧОМУ Precision(SIEM)=1.0 попри низьку детекцію (аргумент для звіту):
+# Precision=TP/(TP+FP) вимірює ХИБНІ ТРИВОГИ, а не пропуски. Wazuh не дав жодної
+# хибної тривоги (FP=0) → Precision=1.0 математично коректно. Його слабкість —
+# ПРОПУСКИ (FN), що відображаються у RECALL та F1, а не в Precision. Тому headline
+# порівняння — Recall/F1, а Precision=1.0 не слід читати як «SIEM хороший».
+SIEM_PRECISION_NOTE = ("Precision=1.0 бо SIEM не дав ХИБНИХ тривог (FP=0); Precision "
+                       "не вимірює пропуски. Слабкість SIEM — у Recall/F1 (пропустив "
+                       "більшість атак). Headline порівняння — саме Recall та F1.")
+
 
 def _detect_tool(events: list) -> str:
     """Автовизначення формату: Wazuh (rule.id + full_log) чи Suricata (event_type=alert)."""
@@ -194,7 +203,8 @@ def main():
         print(f"  {lab:<20}{sm[k]:>18}{d_str:>20}")
     print(f"  {'APT (поведінка)':<20}{SIEM_APT_DETECTED + ' (за побудовою)':>18}{dis_apt_str:>20}")
     print("  " + "─" * 60)
-    print(f"  ℹ  {SIEM_APT_NOTE}")
+    print(f"  ℹ  APT: {SIEM_APT_NOTE}")
+    print(f"  ℹ  Precision: {SIEM_PRECISION_NOTE}")
     if missed_attacks:
         print(f"\n  🔴 {tool} ПРОПУСТИВ {len(missed_attacks)} атак (перевага ЦІС-ШІ):")
         for w in missed_attacks[:20]:
@@ -214,7 +224,8 @@ def main():
         "dataset_size": len(labels),
         "siem": {"tool": tool, "confusion_matrix": {"TP": TP, "FN": FN, "FP": FP, "TN": TN},
                  "metrics": sm, "apt_detected": SIEM_APT_DETECTED,
-                 "apt_detected_note": SIEM_APT_NOTE},
+                 "apt_detected_note": SIEM_APT_NOTE,
+                 "precision_note": SIEM_PRECISION_NOTE},
         "dis": {"metrics": dis, "apt": f"{dis_apt.get('detected','?')}/{dis_apt.get('total','?')}"},
         "siem_missed_attacks": missed_attacks,
         "siem_false_positives": fp_legit,
@@ -233,13 +244,15 @@ def main():
         "",
         f"{'Метрика':<22}{tool_col:>18}{'ЦІС':>12}",
         "─" * 54,
-        f"{'Precision':<22}{sm['precision']:>18}{_d_prec:>12}",
+        # headline — Recall/F1 (саме тут видно слабкість SIEM); Precision нижче з виноскою
         f"{'Recall / Detection':<22}{sm['recall']:>18}{_d_rec:>12}",
         f"{'F1':<22}{sm['f1']:>18}{_d_f1:>12}",
+        f"{'Precision **':<22}{sm['precision']:>18}{_d_prec:>12}",
         f"{'FPR':<22}{sm['fpr']:>18}{_d_fpr:>12}",
         f"{'APT (поведінка)':<22}{SIEM_APT_DETECTED + '*':>18}{_d_apt:>12}",
         "─" * 54,
-        f"* {SIEM_APT_NOTE}",
+        f"*  {SIEM_APT_NOTE}",
+        f"** {SIEM_PRECISION_NOTE}",
         "",
         f"{tool} пропустив {len(missed_attacks)} атак; хибних спрацювань: {len(fp_legit)}.",
         "SIEM ловить відомі payload (SQLi/XSS/traversal за сигнатурами/правилами),",

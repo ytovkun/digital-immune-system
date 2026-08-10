@@ -342,6 +342,37 @@ def send(item, client_ip: str):
         return False, "ERR", 0.0, ""
 
 
+# ─── Категоризація зразків (для розбивки n за класами/типами у звіті) ─────────
+# Дає у звіті: скільки тестів на КОЖЕН клас атаки та на КОЖЕН тип нормальної
+# поведінки (щоб FPR/Recall мали явний знаменник, а «легіт» був окремим сетом).
+_LEGIT_CATS = [
+    ("логін", "Логін виборця"),
+    ("подача голосу", "Голосування (cast)"),   # лише СПРАВЖНІЙ cast, не перегляд /vote
+    ("список виборців", "Перегляд списку виборців"),
+]
+
+
+def _sample_category(label: str, why: str) -> str:
+    w = (why or "").lower()
+    if label == "attack":
+        for key, cat in (("traversal", "path_traversal"), ("sqli", "sql_injection"),
+                         ("xss", "xss"), ("ssti", "template_injection"),
+                         ("verb", "dangerous_verb"), ("devlogin", "impersonation"),
+                         ("csrf", "csrf_trustee"), ("prompt injection", "prompt_injection"),
+                         ("вкидання", "ballot_stuffing")):
+            if key in w:
+                return cat
+        if any(k in w for k in ("tally", "freeze", "combine")):
+            return "tally_manipulation"
+        if any(k in w for k in ("deletion", "archive", "keygen", "unfreeze", "copy", "set_reg")):
+            return "admin_lifecycle"
+        return "other_attack"
+    for key, cat in _LEGIT_CATS:
+        if key in w:
+            return cat
+    return "Перегляд/навігація (сторінки, пагінація)"
+
+
 def main():
     scale = int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].isdigit() else 1
     print("=" * 78)
@@ -397,6 +428,21 @@ def main():
     accuracy  = (TP + TN) / (TP + TN + FP + FN) if (TP + TN + FP + FN) else 0.0
     fpr       = FP / (FP + TN) if (FP + TN) else 0.0
     fnr       = FN / (FN + TP) if (FN + TP) else 0.0
+
+    # ─── Розбивка n за класами атак / типами легіт-поведінки ──────────────────
+    # n_attack — знаменник Recall; n_legit — знаменник FPR (явно у звіті/дашборді).
+    n_attack, n_legit = TP + FN, FP + TN
+    attack_by_class, legit_by_category = {}, {}
+    for label, why, status, res, info in rows:
+        cat = _sample_category(label, why)
+        if label == "attack":
+            d = attack_by_class.setdefault(cat, {"n": 0, "blocked": 0, "missed": 0})
+            d["n"] += 1
+            d["blocked" if res.startswith("TP") else "missed"] += 1
+        else:
+            d = legit_by_category.setdefault(cat, {"n": 0, "allowed": 0, "false_block": 0})
+            d["n"] += 1
+            d["allowed" if res.startswith("TN") else "false_block"] += 1
 
     print("\n" + "=" * 78)
     print("  📈 КЛАСИФІКАЦІЙНІ МЕТРИКИ")
@@ -503,6 +549,11 @@ def main():
                                  "та payload-бэкстоп детерміновані"),
         "scale": scale,
         "samples": TP + TN + FP + FN,
+        # Явна розбивка n (знаменники Recall/FPR) + окремі сети атак і легіт-поведінки
+        "n_attack": n_attack,
+        "n_legit": n_legit,
+        "attack_by_class": attack_by_class,
+        "legit_by_category": legit_by_category,
         "confusion_matrix": {"TP": TP, "FN": FN, "FP": FP, "TN": TN},
         "metrics": {
             "precision": round(precision, 4), "recall": round(recall, 4),
