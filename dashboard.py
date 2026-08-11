@@ -1,12 +1,12 @@
 """
-Візуальний дашборд цифрової імунної системи (Streamlit).
-Цифрова імунна система — dashboard.py
+Visual dashboard of the digital immune system (Streamlit).
+Digital immune system — dashboard.py
 
-Читає звіти з reports/ (attacks/ risk/ benchmark/ metrics/ defense/ ire/)
-та малює таблиці, графіки, ROC-криву й матрицю плутанини — наочно для захисту.
+Reads reports from reports/ (attacks/ risk/ benchmark/ metrics/ defense/ ire/)
+and draws tables, charts, the ROC curve and the confusion matrix — visually for the defense.
 
-Запуск:  streamlit run dashboard.py
-(потрібно: pip install -r requirements.txt)
+Run:  streamlit run dashboard.py
+(requires: pip install -r requirements.txt)
 """
 
 import glob
@@ -27,20 +27,20 @@ RISK_COLORS = {"CRITICAL": "#d62728", "HIGH": "#ff7f0e", "MEDIUM": "#f1c40f",
                "LOW": "#2ca02c", "Critical": "#d62728", "High": "#ff7f0e",
                "Medium": "#f1c40f", "Low": "#2ca02c"}
 
-# Впорядкування рівнів/терміновості для сортування таблиць «worst-first».
-# ВАЖЛИВО: без цього сортування рядків за текстом дало б АЛФАВІТ
-# (Critical, High, Low, Medium — безглуздо); тут — за реальною критичністю.
+# Ordering of levels/urgency for "worst-first" table sorting.
+# IMPORTANT: without this, sorting rows by text would give ALPHABETICAL order
+# (Critical, High, Low, Medium — meaningless); here — by real criticality.
 LEVEL_ORDER = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3,
                "CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
 URGENCY_ORDER = {"IMMEDIATE": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
 
 
 def _rank(mapping: dict, val) -> int:
-    """Ранг значення для сортування (невідоме → у кінець)."""
+    """Rank of a value for sorting (unknown → to the end)."""
     return mapping.get(str(val), 99)
 
 
-# ─── Завантаження звітів ──────────────────────────────────────────────────────
+# ─── Loading reports ──────────────────────────────────────────────────────────
 
 def _latest(subdir: str, pattern: str):
     files = sorted(glob.glob(str(REPORTS / subdir / pattern)))
@@ -53,7 +53,7 @@ def _latest(subdir: str, pattern: str):
         return None, Path(p).name
 
 
-# ─── Заголовок ────────────────────────────────────────────────────────────────
+# ─── Header ───────────────────────────────────────────────────────────────────
 
 st.title("🛡 Цифрова імунна система — результати")
 st.caption("GenAI-моделювання кіберзагроз + inline-захист Helios e-voting · "
@@ -63,25 +63,25 @@ bench, bench_f   = _latest("benchmark", "benchmark_*.json")
 risk, risk_f     = _latest("risk", "risk_assessment_*.json")
 ire, ire_f       = _latest("ire", "ire_report_*.json")
 metrics, met_f   = _latest("metrics", "metrics_summary_*.json")
-# Захист: окремо «без захисту» (baseline) і «із захистом» (defended) — для порівняння.
-# Fallback на загальний патерн (легасі-прогони без scope).
+# Defense: separately "without defense" (baseline) and "with defense" (defended) — for comparison.
+# Fallback to the generic pattern (legacy runs without scope).
 defense_def, defd_f  = _latest("defense", "defense_effectiveness_defended_*.json")
 defense_base, defb_f = _latest("defense", "defense_effectiveness_baseline_*.json")
 defense, def_f = (defense_def, defd_f) if defense_def else _latest(
     "defense", "defense_effectiveness_*.json")
-# Ко-еволюція (щит vs меч поколіннями)
+# Co-evolution (shield vs sword across generations)
 coevo, coevo_f = _latest("coevolution", "coevolution_defended_*.json")
 if not coevo:
     coevo, coevo_f = _latest("coevolution", "coevolution_*.json")
-# SIEM (Suricata/Wazuh) vs ЦІС — виміряне порівняння на одному наборі
+# SIEM (Suricata/Wazuh) vs DIS — a measured comparison on one dataset
 siem, siem_f = _latest("siem", "siem_comparison_*.json")
-# Kill chain / attack flow (розділи 3.1, 4.5, 5.4)
+# Kill chain / attack flow (sections 3.1, 4.5, 5.4)
 killchain, kc_f = _latest("killchain", "attack_flow.json")
-# Re-detection через імунну пам'ять (розділ 5.1)
+# Re-detection through immune memory (section 5.1)
 redetect, rd_f = _latest("redetection", "redetection_*.json")
 
 
-# ─── KPI-рядок ────────────────────────────────────────────────────────────────
+# ─── KPI row ──────────────────────────────────────────────────────────────────
 
 st.markdown("**🛡 Із захистом (ЦІС) — класифікаційні метрики:**")
 c1, c2, c3, c4, c5 = st.columns(5)
@@ -90,14 +90,14 @@ if bench:
     c1.metric("Precision", f"{m.get('precision', 0):.2f}")
     c2.metric("Recall", f"{m.get('recall', 0):.2f}")
     c3.metric("F1", f"{m.get('f1', 0):.2f}")
-    # headline — реалістичний комбінований ROC (осн.+гранична), а не «ідеальний» 1.0
+    # headline — the realistic combined ROC (main+borderline), not the "ideal" 1.0
     c4.metric("ROC-AUC (реаліст.)", f"{bench.get('roc_auc_combined') or bench.get('roc_auc') or 0:.3f}",
               help="Комбінований ROC (основна+гранична вибірка) — чесніший за точковий 1.0")
     c5.metric("FPR", f"{m.get('fpr', 0):.2f}")
 else:
     st.info("Немає бенчмарку — прожени `python immune_system/benchmark.py` (з проксі).")
 
-# ── «Без захисту» (сирий Helios) — основні показники для контрасту на 1 екрані ──
+# ── "Without defense" (raw Helios) — key indicators for contrast on screen 1 ──
 if defense_base:
     sb = defense_base.get("summary", {})
     _bb = sb.get("critical_ops_blocked", 0)
@@ -122,7 +122,7 @@ tabs = st.tabs(["⚠️ Ризики", "📈 Бенчмарк + ROC", "🧬 Кл
                 "📡 Live"])
 
 
-# ─── ВКЛАДКА 1: Ризики ────────────────────────────────────────────────────────
+# ─── TAB 1: Risks ─────────────────────────────────────────────────────────────
 
 with tabs[0]:
     st.subheader("Кількісна оцінка ризиків атак")
@@ -130,7 +130,7 @@ with tabs[0]:
         st.info("Немає risk_assessment — прожени `python core/risk_scorer.py`.")
     else:
         scores = risk.get("scores", [])
-        # порядок колонок: ідентифікатор → рівень/скор → тип/вектор → фактори
+        # column order: identifier → level/score → type/vector → factors
         df = pd.DataFrame([{
             "Клас атаки": s["attack_class"],
             "Рівень": s.get("risk_level", ""),
@@ -169,7 +169,7 @@ with tabs[0]:
                 "це саме сфера OWASP Risk Rating. CVSS застосовний на рівні `VULN-xx`. "
                 "Деталі — `docs/RISK_AND_COVERAGE.md`.")
 
-        # графік: score по класах, базова vs адаптивна
+        # chart: score by class, base vs adaptive
         chart = alt.Chart(df).mark_bar().encode(
             x=alt.X("Score:Q", title="Композитний ризик-скор (0–10)"),
             y=alt.Y("Клас атаки:N", sort="-x", title=None),
@@ -180,7 +180,7 @@ with tabs[0]:
         ).properties(height=max(300, 26 * df["Клас атаки"].nunique()))
         st.altair_chart(chart, use_container_width=True)
 
-        # worst-first: за композитним ризиком ↓, тай-брейк — за рівнем критичності
+        # worst-first: by composite risk ↓, tie-break — by criticality level
         _df = df.assign(_lvl=df["Рівень"].map(lambda v: _rank(LEVEL_ORDER, v)))
         _df = _df.sort_values(["Score", "_lvl"], ascending=[False, True]).drop(columns="_lvl")
         st.dataframe(_df, use_container_width=True, hide_index=True)
@@ -188,7 +188,7 @@ with tabs[0]:
         st.caption(f"Джерело: reports/risk/{risk_f}")
 
 
-# ─── ВКЛАДКА 2: Бенчмарк + ROC ────────────────────────────────────────────────
+# ─── TAB 2: Benchmark + ROC ───────────────────────────────────────────────────
 
 with tabs[1]:
     st.subheader("Класифікаційні метрики захисту")
@@ -236,7 +236,7 @@ with tabs[1]:
                                 use_container_width=True)
             else:
                 st.info("Немає ROC-точок (онови бенчмарк).")
-        # n-розбивка (знаменники Recall/FPR) — з полів звіту або з матриці плутанини
+        # n breakdown (Recall/FPR denominators) — from report fields or the confusion matrix
         _na = bench.get("n_attack", cm.get("TP", 0) + cm.get("FN", 0))
         _nl = bench.get("n_legit", cm.get("FP", 0) + cm.get("TN", 0))
         st.caption(f"Зразків: {bench.get('samples')} "
@@ -251,7 +251,7 @@ with tabs[1]:
             f"{bench.get('roc_auc_combined') or 0:.3f}** (осн.+гранична), а не «ідеальний» 1.0. "
             f"Напрям розвитку — розширення вибірки.")
 
-        # Розбивка n за класами атак / типами легіт (якщо звіт містить — після ре-рану)
+        # n breakdown by attack class / legit type (if the report has it — after a re-run)
         abc = bench.get("attack_by_class") or {}
         lbc = bench.get("legit_by_category") or {}
         if abc or lbc:
@@ -271,7 +271,7 @@ with tabs[1]:
                         "✅ пройшло": v.get("allowed"), "⚠️ хибний блок": v.get("false_block"),
                     } for k, v in lbc.items()]), use_container_width=True, hide_index=True)
 
-        # ── Гранична стрес-вибірка + реалістичний (комбінований) ROC ──
+        # ── Borderline stress set + realistic (combined) ROC ──
         border = bench.get("borderline")
         cpts = bench.get("roc_points_combined", [])
         if border and cpts:
@@ -312,7 +312,7 @@ with tabs[1]:
                                 use_container_width=True)
 
 
-# ─── ВКЛАДКА 3: IRE класифікація ──────────────────────────────────────────────
+# ─── TAB 3: IRE classification ────────────────────────────────────────────────
 
 with tabs[2]:
     st.subheader("Класифікація загроз і реагування (Detect→Classify→Respond)")
@@ -320,7 +320,7 @@ with tabs[2]:
         st.info("Немає IRE-звіту — прожени `python core/immune_response_engine.py`.")
     else:
         inc = ire.get("incidents", [])
-        # порядок колонок: ідентифікатор → ризик/терміновість → дії → таксономія → джерело/патч
+        # column order: identifier → risk/urgency → actions → taxonomy → source/patch
         df = pd.DataFrame([{
             "Клас атаки": i.get("attack_class"),
             "Ризик": i.get("risk_level"),
@@ -341,8 +341,8 @@ with tabs[2]:
 
         if b_risk:
             rdf = pd.DataFrame({"Рівень": list(b_risk), "К-сть": list(b_risk.values())})
-            # домен шкали = ЛИШЕ наявні у даних рівні (інакше Altair домалює в легенду
-            # усі ключі RISK_COLORS — і UPPER, і Capitalized — дублюючи рівні-привиди)
+            # scale domain = ONLY the levels present in the data (otherwise Altair draws
+            # all RISK_COLORS keys into the legend — both UPPER and Capitalized — duplicating ghost levels)
             _dom = list(b_risk)
             _rng = [RISK_COLORS.get(k, "#888888") for k in _dom]
             chart = alt.Chart(rdf).mark_arc(innerRadius=50).encode(
@@ -351,7 +351,7 @@ with tabs[2]:
                 tooltip=["Рівень", "К-сть"])
             st.altair_chart(chart.properties(height=260), use_container_width=True)
 
-        # worst-first: за рівнем ризику (Critical→Low), тай-брейк — за терміновістю
+        # worst-first: by risk level (Critical→Low), tie-break — by urgency
         _df = df.assign(
             _lvl=df["Ризик"].map(lambda v: _rank(LEVEL_ORDER, v)),
             _urg=df["Терміновість"].map(lambda v: _rank(URGENCY_ORDER, v)))
@@ -361,12 +361,12 @@ with tabs[2]:
                    f"(IMMEDIATE→LOW).  ·  Джерело: reports/ire/{ire_f}")
 
 
-# ─── ВКЛАДКА 4: Ефективність захисту ──────────────────────────────────────────
+# ─── TAB 4: Defense effectiveness ─────────────────────────────────────────────
 
 with tabs[3]:
     st.subheader("Чи дійшла небезпечна операція до Helios")
 
-    # Порівняння «без захисту» (baseline) vs «із захистом» (defended) — суть campaign.
+    # Comparison "without defense" (baseline) vs "with defense" (defended) — the essence of campaign.
     if defense_base and defense_def:
         sb = defense_base.get("summary", {})
         sd = defense_def.get("summary", {})
@@ -389,7 +389,7 @@ with tabs[3]:
         ]).melt("Режим", var_name="Результат", value_name="Операцій")
         st.altair_chart(
             alt.Chart(cmp_df).mark_bar().encode(
-                # без крапки в імені поля: Altair трактує "." як вкладене поле → пусто
+                # no dot in the field name: Altair treats "." as a nested field → empty
                 x=alt.X("Операцій:Q", title="Крит. операцій"),
                 y=alt.Y("Режим:N", sort=["без захисту", "із захистом"]),
                 color=alt.Color("Результат:N", scale=alt.Scale(
@@ -428,12 +428,12 @@ with tabs[3]:
 
         atk = defense.get("attacks", [])
         if atk:
-            # worst-first: спершу з ВИТОКОМ (крит-оп дійшла), далі за к-стю крит-операцій ↓
+            # worst-first: first with a LEAK (crit op reached), then by number of crit ops ↓
             def _atk_key(a):
                 reached = (a.get("crit_total", 0) or 0) - (a.get("crit_blocked", 0) or 0)
                 return (-reached, -(a.get("crit_total", 0) or 0), str(a.get("attack_class")))
             atk_sorted = sorted(atk, key=_atk_key)
-            # порядок колонок: ідентифікатор → статус → крит-операції → вердикт ШІ → вектор
+            # column order: identifier → status → crit ops → AI verdict → vector
             st.dataframe(pd.DataFrame([{
                 "Клас атаки": a.get("attack_class"),
                 "Статус": a.get("defense_status"),
@@ -448,7 +448,7 @@ with tabs[3]:
             st.caption(f"Джерело: reports/defense/{def_f}")
 
 
-# ─── ВКЛАДКА 5: Ко-еволюція (щит vs меч поколіннями) ──────────────────────────
+# ─── TAB 5: Co-evolution (shield vs sword across generations) ──────────────────
 
 with tabs[4]:
     st.subheader("Ко-еволюція захисту й атак — динаміка поколінь")
@@ -514,7 +514,7 @@ with tabs[4]:
         st.caption(f"Джерело: reports/coevolution/{coevo_f}")
 
 
-# ─── ВКЛАДКА 6: Kill Chain (розділи 3.1, 4.5, 5.4) ────────────────────────────
+# ─── TAB 6: Kill Chain (sections 3.1, 4.5, 5.4) ───────────────────────────────
 
 with tabs[5]:
     st.subheader("Kill Chain — послідовність кроків атаки та вердикт захисту")
@@ -557,7 +557,7 @@ with tabs[5]:
         st.caption(f"Джерело: reports/killchain/{kc_f} (scope={killchain.get('scope')})")
 
 
-# ─── ВКЛАДКА 7: Attack Surface (розділ 4.3) ───────────────────────────────────
+# ─── TAB 7: Attack Surface (section 4.3) ──────────────────────────────────────
 
 with tabs[6]:
     st.subheader("Attack Surface — endpoint'и Helios під атакою та покриття захисту")
@@ -582,14 +582,14 @@ with tabs[6]:
         for ep, d in agg.items():
             reached = d["leaked"] + d["allowed"]
             tot = d["blocked"] + reached
-            # порядок колонок: ідентифікатор → вердикти (блок/витік/дійшло) → покриття → обсяг
+            # column order: identifier → verdicts (block/leak/reached) → coverage → volume
             rows.append({"Endpoint": ep,
                          "🟩 Блок": d["blocked"], "🟥 Витік (крит)": d["leaked"],
                          "🟦 Безпеч. дійшло": d["allowed"],
                          "Покриття, %": round(d["blocked"] / tot * 100) if tot else None,
                          "Кроків": tot + d["sim"],
                          "Класів атак": len(d["classes"])})
-        # worst-first: спершу endpoint із ВИТОКАМИ крит-операцій, далі за к-стю атак-кроків
+        # worst-first: first endpoints with LEAKS of crit ops, then by number of attack steps
         df = pd.DataFrame(rows).sort_values(
             ["🟥 Витік (крит)", "Кроків"], ascending=[False, False])
         x, y, z = st.columns(3)
@@ -601,7 +601,7 @@ with tabs[6]:
         st.dataframe(df, use_container_width=True, hide_index=True)
         st.caption("↓ Відсортовано worst-first: спершу endpoint із витоками крит-операцій, "
                    "далі за к-стю атак-кроків.")
-        # діаграма: топ endpoint — блок vs дійшло (крит-витік + безпечно)
+        # chart: top endpoints — blocked vs reached (crit-leak + safe)
         top = df.head(12).melt(id_vars=["Endpoint"],
                                value_vars=["🟩 Блок", "🟥 Витік (крит)", "🟦 Безпеч. дійшло"],
                                var_name="Результат", value_name="Кроків_")
@@ -618,7 +618,7 @@ with tabs[6]:
         st.caption(f"Джерело: reports/killchain/{kc_f}")
 
 
-# ─── ВКЛАДКА 8: Метрики vs SIEM ───────────────────────────────────────────────
+# ─── TAB 8: Metrics vs SIEM ───────────────────────────────────────────────────
 
 with tabs[7]:
     st.subheader("Час реагування та порівняння з класичним SIEM")
@@ -631,7 +631,7 @@ with tabs[7]:
                                  "Блоків": v.get("count", 0)} for k, v in dt.items()])
             st.altair_chart(
                 alt.Chart(dtf).mark_bar().encode(
-                    # без крапки в імені поля (Altair трактує "." як вкладене поле)
+                    # no dot in the field name (Altair treats "." as a nested field)
                     x=alt.X("avg_ms:Q", scale=alt.Scale(type="symlog"),
                             title="Сер. час, ms (log)"),
                     y=alt.Y("Рівень:N", sort="-x"),
@@ -653,7 +653,7 @@ with tabs[7]:
                 "Джерело": m.get("source", ""),
             } for name, m in sec.items()]), use_container_width=True, hide_index=True)
 
-        # Re-detection через імунну пам'ять (розділ 5.1)
+        # Re-detection through immune memory (section 5.1)
         if redetect:
             st.divider()
             st.markdown("**🧠 Re-detection через імунну пам'ять** (adaptive→innate immunity)")
@@ -671,7 +671,7 @@ with tabs[7]:
                        f"({redetect.get('total_repeats',0)} повторних вимірів). "
                        f"Джерело: reports/redetection/{rd_f}")
 
-        # Виміряне head-to-head: реальний SIEM vs ЦІС на ОДНОМУ наборі (якщо є)
+        # Measured head-to-head: a real SIEM vs DIS on the SAME dataset (if available)
         if siem:
             tool = siem.get("siem", {}).get("tool") or "SIEM"
             st.markdown(f"**🆚 Виміряне порівняння: {tool} vs ЦІС** (один розмічений набір)")
@@ -680,7 +680,7 @@ with tabs[7]:
             scm = siem.get("siem", {}).get("confusion_matrix", {})
             siem_col = f"SIEM ({tool})"
             rows = []
-            # headline — Recall/F1 (тут видно слабкість SIEM); Precision нижче з поясненням
+            # headline — Recall/F1 (this is where the SIEM's weakness shows); Precision below with an explanation
             for k, lab in [("recall", "Recall / Detection ⭐"), ("f1", "F1 ⭐"),
                            ("precision", "Precision **"), ("fpr", "FPR")]:
                 rows.append({"Метрика": lab, siem_col: sm.get(k),
@@ -693,7 +693,7 @@ with tabs[7]:
             with cL:
                 st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
             with cR:
-                # графік: Precision/Recall/F1 — SIEM vs ЦІС
+                # chart: Precision/Recall/F1 — SIEM vs DIS
                 bar = pd.DataFrame([
                     {"Метрика": lab, "Система": tool, "Значення": sm.get(k) or 0}
                     for k, lab in [("precision", "Precision"), ("recall", "Recall"), ("f1", "F1")]
@@ -742,7 +742,7 @@ with tabs[7]:
         st.caption(f"Джерело: reports/metrics/{met_f}")
 
 
-# ─── ВКЛАДКА 9: Легітимна поведінка (окремий сет — як система розпізнає «норму») ─
+# ─── TAB 9: Legitimate behavior (a separate set — how the system recognizes "normal") ─
 
 with tabs[8]:
     st.subheader("Легітимна поведінка виборця — як ЦІС розпізнає «норму»")
@@ -774,7 +774,7 @@ with tabs[8]:
             st.info("Розбивка за типами поведінки з'явиться після наступного прогону "
                     "`benchmark.py` (звіт отримає поле `legit_by_category`). "
                     f"Наразі відомо: {_nl2} легіт-запитів, хибних блоків — {_fp2}.")
-        # гранична «сіра» легіт-поведінка (апостроф O'Brien тощо) — найтонший тест норми
+        # borderline "grey" legit behavior (apostrophe O'Brien, etc.) — the subtlest normality test
         _bl = bench.get("borderline", {})
         _bcases = [c for c in _bl.get("cases", []) if c.get("label") == "legit"]
         if _bcases:
@@ -785,7 +785,7 @@ with tabs[8]:
         st.caption(f"Джерело: reports/benchmark/{bench_f}")
 
 
-# ─── ВКЛАДКА 10: Live проксі ──────────────────────────────────────────────────
+# ─── TAB 10: Live proxy ───────────────────────────────────────────────────────
 
 with tabs[9]:
     st.subheader("Живі метрики проксі (:8000)")
