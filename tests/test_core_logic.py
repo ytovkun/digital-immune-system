@@ -1,9 +1,9 @@
 """
-Unit-тести чистої логіки модулів core/ (без серверів та викликів Claude):
-  - risk_scorer        : формули скорингу (CIA/LINDDUN/execution/composite)
-  - attack_generator   : санітизація та відновлення JSON, валідація каталогу
-  - red_team_agent     : інтерполяція контексту та оцінка успіху кроку
-Запуск:  pytest tests/ -v
+Unit tests for the pure logic of core/ modules (no servers or Claude calls):
+  - risk_scorer        : scoring formulas (CIA/LINDDUN/execution/composite)
+  - attack_generator   : JSON sanitization and recovery, catalog validation
+  - red_team_agent     : context interpolation and step-success evaluation
+Run:  pytest tests/ -v
 """
 
 import sys
@@ -20,13 +20,13 @@ import red_team_agent as rta
 # ═══ risk_scorer ══════════════════════════════════════════════════════════════
 
 def test_cia_score_all_critical_is_one():
-    # ваги 0.35+0.45+0.20 = 1.0, Critical=1.0 → сума 1.0
+    # weights 0.35+0.45+0.20 = 1.0, Critical=1.0 → sum 1.0
     assert rs.cia_score({"confidentiality": "Critical", "integrity": "Critical",
                          "availability": "Critical"}) == 1.0
 
 
 def test_cia_score_defaults_low_when_missing():
-    # відсутні ключі → Low (0.25) → 0.25 * (0.35+0.45+0.20) = 0.25
+    # missing keys → Low (0.25) → 0.25 * (0.35+0.45+0.20) = 0.25
     assert rs.cia_score({}) == 0.25
 
 
@@ -64,7 +64,7 @@ def test_score_report_bounds_and_level():
     out = rs.score_report(report)
     assert 0 <= out["composite_score"] <= 10
     assert out["risk_level"] in ("CRITICAL", "HIGH", "MEDIUM", "LOW")
-    # критична, виконана атака з високим CIA → має бути високий ризик
+    # critical, executed attack with high CIA → should be high risk
     assert out["risk_level"] in ("CRITICAL", "HIGH")
 
 

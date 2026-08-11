@@ -1,18 +1,18 @@
 """
-SIEM-порівняння, крок 1: РЕПЛЕЙ розміченого набору для захоплення трафіку.
-Цифрова імунна система — siem/siem_capture.py
+SIEM comparison, step 1: REPLAY the labeled set to capture traffic.
+Digital immune system — siem/siem_capture.py
 
-Надсилає ТОЙ САМИЙ labeled-набір, що й benchmark.py, до цільового сервера, аби
-мережевий IDS (Suricata) побачив ідентичний атакуючий трафік. Кожен запит несе
-унікальний маркер `_bid=<idx>` у URL — щоб потім однозначно зіставити алерти
-Suricata з розміченими запитами (корелює siem_compare.py).
+Sends the SAME labeled set as benchmark.py to the target server, so a network
+IDS (Suricata) sees identical attack traffic. Each request carries a unique
+marker `_bid=<idx>` in the URL — so alerts can later be unambiguously matched to
+the labeled requests (correlated by siem_compare.py).
 
-Ціль за замовчуванням — СИРИЙ Helios :8001 (як у реальному деплої, де IDS моніторить
-трафік до веб-сервера). Зміна: env SIEM_TARGET=http://localhost:PORT.
+Default target — RAW Helios :8001 (as in a real deployment where the IDS monitors
+traffic to the web server). Change: env SIEM_TARGET=http://localhost:PORT.
 
-Порядок (див. README / підказку siem_compare.py):
-  1. sudo tcpdump -i lo0 -w reports/siem/bench.pcap 'tcp port 8001'   (термінал A)
-  2. python siem/siem_capture.py                             (термінал B)
+Order (see README / the siem_compare.py hint):
+  1. sudo tcpdump -i lo0 -w reports/siem/bench.pcap 'tcp port 8001'   (terminal A)
+  2. python siem/siem_capture.py                             (terminal B)
   3. Ctrl-C tcpdump → suricata -r bench.pcap ... → python siem_compare.py
 """
 
@@ -24,7 +24,7 @@ from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT))
-sys.path.insert(0, str(_ROOT / "immune_system"))   # benchmark лежить тут
+sys.path.insert(0, str(_ROOT / "immune_system"))   # benchmark is here
 import requests
 from env_loader import load_config
 import benchmark as bench
@@ -35,7 +35,7 @@ BROWSER_UA = bench.BROWSER_UA
 
 
 def _with_bid(path: str, bid: int) -> str:
-    """Додає унікальний маркер _bid=<idx> у query (для кореляції з алертами)."""
+    """Add a unique marker _bid=<idx> to the query (for correlation with alerts)."""
     sep = "&" if "?" in path else "?"
     return f"{path}{sep}_bid={bid}"
 
@@ -55,8 +55,8 @@ def main():
     print(f"  Кожен запит має _bid=<idx> для кореляції з алертами SIEM.")
     print("=" * 70)
 
-    # append: Wazuh тейлить НОВІ рядки (файл спорожнюється оркестратором ПЕРЕД
-    # стартом моніторингу). Suricata-шлях цим не залежить.
+    # append: Wazuh tails NEW lines (the file is emptied by the orchestrator BEFORE
+    # monitoring starts). The Suricata path does not depend on this.
     labels, sent = {}, 0
     with open(access_log, "a", encoding="utf-8") as alog:
         for i, item in enumerate(ds):
@@ -75,7 +75,7 @@ def main():
                 sent += 1
             except requests.exceptions.RequestException:
                 pass
-            # Apache combined access-log рядок (те, що читає Wazuh; містить _bid у URL)
+            # Apache combined access-log line (what Wazuh reads; contains _bid in the URL)
             ts = time.strftime("%d/%b/%Y:%H:%M:%S %z")
             ref = headers.get("Referer", "-")
             alog.write(f'127.0.0.1 - - [{ts}] "{item["method"]} {path_bid} HTTP/1.1" '

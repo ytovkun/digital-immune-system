@@ -1,10 +1,10 @@
 """
-Unit-тести новішої логіки фрейму (без живих серверів):
-  - гранична (borderline) стрес-вибірка бенчмарку + roc_auc
-  - метрика 'held' у ко-еволюції (в т.ч. bypass-атаки без крит-операцій)
-  - виключення adaptive-звітів із defense_report
+Unit tests for newer framework logic (no live servers):
+  - benchmark borderline stress set + roc_auc
+  - the 'held' metric in co-evolution (incl. bypass attacks without crit ops)
+  - exclusion of adaptive reports from defense_report
   - decide_adaptation_mode (escalate/refine/bypass)
-Запуск:  pytest tests/ -v
+Run:  pytest tests/ -v
 """
 
 import sys
@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "immune_system")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "core"))
 
 
-# ─── Гранична стрес-вибірка + ROC-AUC ─────────────────────────────────────────
+# ─── Borderline stress set + ROC-AUC ──────────────────────────────────────────
 
 def test_borderline_dataset_balanced_and_valid():
     import benchmark as b
@@ -41,7 +41,7 @@ def test_roc_auc_partial_overlap_below_one():
     assert 0.5 < auc < 1.0                      # перекриття → реалістичний AUC
 
 
-# ─── Ко-еволюція: метрика 'held' (0 небезпечних операцій дійшло) ───────────────
+# ─── Co-evolution: the 'held' metric (0 dangerous ops reached) ────────────────
 
 def _item(crit_total, crit_blocked, crit_reached):
     return {"crit_total": crit_total, "crit_blocked": crit_blocked,
@@ -56,7 +56,7 @@ def test_held_metric_all_blocked():
 
 
 def test_held_metric_bypass_zero_critical():
-    # bypass-атаки БЕЗ крит-операцій → held 100% (0 дійшло), block_rate невизначений
+    # bypass attacks WITHOUT crit ops → held 100% (0 reached), block_rate undefined
     import coevolution_report as cr
     s = cr._gen_stats([_item(0, 0, 0), _item(0, 0, 0), _item(0, 0, 0)])
     assert s["held"] == 3 and s["held_pct"] == 100.0
@@ -70,7 +70,7 @@ def test_held_metric_counts_leak():
     assert s["leaked"] == 1 and s["held"] == 1 and s["held_pct"] == 50.0
 
 
-# ─── Defense: виключення adaptive-звітів ──────────────────────────────────────
+# ─── Defense: exclusion of adaptive reports ───────────────────────────────────
 
 def test_defense_excludes_adaptive_reports(tmp_path, monkeypatch):
     import defense_report as dr
@@ -83,7 +83,7 @@ def test_defense_excludes_adaptive_reports(tmp_path, monkeypatch):
     assert len(files) == 1 and files[0].endswith("ATK-1_report.json")   # без adaptive
 
 
-# ─── adaptive_generator: вибір режиму мутації ─────────────────────────────────
+# ─── adaptive_generator: mutation mode selection ──────────────────────────────
 
 def test_decide_adaptation_mode_thresholds():
     import adaptive_generator as ag

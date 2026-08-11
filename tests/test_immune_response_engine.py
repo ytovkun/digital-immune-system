@@ -1,9 +1,9 @@
 """
-Unit-тести Immune Response Engine (offline-агрегація) — без БД-оркестратора:
-  - ThreatClassifier  : класифікація STRIDE/MITRE/LINDDUN + рівень ризику
-  - ResponseSelector  : вибір дій реагування
-  - detect_from_immune_blocks : ІНТЕГРАЦІЯ inline-проксі → offline-двигун
-Запуск:  pytest tests/ -v
+Unit tests for the Immune Response Engine (offline aggregation) — no DB orchestrator:
+  - ThreatClassifier  : STRIDE/MITRE/LINDDUN classification + risk level
+  - ResponseSelector  : selection of response actions
+  - detect_from_immune_blocks : INTEGRATION of the inline proxy → offline engine
+Run:  pytest tests/ -v
 """
 
 import json
@@ -41,7 +41,7 @@ def test_classify_blocked_lowers_risk():
 def test_classify_unknown_infers_signature():
     c = ire.ThreatClassifier().classify(
         {"attack_class": "unknown", "name": "ballot race cast stuffing"})
-    # за ключовими словами має зматчити сигнатуру (не дефолт T0000 завжди)
+    # by keywords it should match a signature (not always the default T0000)
     assert "mitre" in c and c["risk_level"] in ("Critical", "High", "Medium", "Low")
 
 
@@ -62,7 +62,7 @@ def test_response_selector_unknown_defaults():
     assert r["actions"] == ["ALERT", "LOG"]
 
 
-# ═══ ІНТЕГРАЦІЯ: inline-проксі → offline-двигун ═══════════════════════════════
+# ═══ INTEGRATION: inline proxy → offline engine ═══════════════════════════════
 
 def _write_blocks(lines):
     p = Path(tempfile.mktemp(suffix=".jsonl"))

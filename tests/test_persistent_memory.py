@@ -1,6 +1,6 @@
 """
-Unit-тести довготривалої імунної памʼяті (PersistentMemory).
-Запуск:  pytest tests/ -v
+Unit tests for the long-term immune memory (PersistentMemory).
+Run:  pytest tests/ -v
 """
 
 import sys
@@ -33,7 +33,7 @@ def test_survives_restart():
     db = _tmpdb()
     PersistentMemory(db).store("s", {"verdict": "BLOCK", "attack_class": "x",
                                      "confidence": 1.0, "reasoning": "r"}, time.time() + 100)
-    # «рестарт» — нове зʼєднання
+    # "restart" — a new connection
     m2 = PersistentMemory(db)
     assert m2.count() == 1
     os.remove(db)

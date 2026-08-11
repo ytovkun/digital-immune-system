@@ -1,16 +1,16 @@
 """
-Очистка артефактів попередніх запусків.
-Використання:
-  python utils/cleaner.py                    — dry-run (показати що буде видалено)
-  python utils/cleaner.py --yes              — видалити ВСЕ (включно зі сценаріями)
-  python utils/cleaner.py --keep-scenarios   — dry-run, але сценарії лишити
-  python utils/cleaner.py --keep-scenarios --yes  — видалити reports+logs, сценарії лишити
+Cleanup of artifacts from previous runs.
+Usage:
+  python utils/cleaner.py                    — dry-run (show what will be deleted)
+  python utils/cleaner.py --yes              — delete EVERYTHING (including scenarios)
+  python utils/cleaner.py --keep-scenarios   — dry-run, but keep scenarios
+  python utils/cleaner.py --keep-scenarios --yes  — delete reports+logs, keep scenarios
 
-Чистить:
-  reports/   — звіти атак, IRE, risk, chain (регенеруються)
+Cleans:
+  reports/   — attack reports, IRE, risk, chain (regenerated)
   logs/      — attack_events, immune_responses, immune_blocks,
-               immune_memory.db (пам'ять ЦІС), *.log
-  scenarios/ — лише якщо БЕЗ прапора --keep-scenarios
+               immune_memory.db (DIS memory), *.log
+  scenarios/ — only if WITHOUT the --keep-scenarios flag
 """
 
 import sys
@@ -30,17 +30,17 @@ def collect_artifacts(cfg: dict, keep_scenarios: bool) -> tuple:
     logs_dir      = root / cfg["paths"]["logs_dir"]
     to_delete = []
     sub_dirs = []
-    # Сценарії — лише якщо не просили зберегти
+    # Scenarios — only if not asked to keep them
     if not keep_scenarios and scenarios_dir.exists():
         to_delete += list(scenarios_dir.rglob("*.json"))
         sub_dirs += [scenarios_dir / "system", scenarios_dir / "voter", scenarios_dir / "adaptive"]
-    # Звіти й логи — завжди. reports/ тепер розкладені по підпапках
-    # (attacks/ risk/ benchmark/ metrics/ defense/ ire/) → рекурсивний пошук.
+    # Reports and logs — always. reports/ is now split into subdirs
+    # (attacks/ risk/ benchmark/ metrics/ defense/ ire/) → recursive search.
     if reports_dir.exists():
         to_delete += list(reports_dir.rglob("*.json")) + list(reports_dir.rglob("*.txt"))
-        sub_dirs += [d for d in reports_dir.iterdir() if d.is_dir()]   # прибрати порожні підпапки
+        sub_dirs += [d for d in reports_dir.iterdir() if d.is_dir()]   # remove empty subdirs
     if logs_dir.exists():
-        to_delete += [f for f in logs_dir.iterdir() if f.is_file()]   # вкл. ai_memory.db / immune_memory.db
+        to_delete += [f for f in logs_dir.iterdir() if f.is_file()]   # incl. ai_memory.db / immune_memory.db
     return to_delete, sub_dirs
 
 

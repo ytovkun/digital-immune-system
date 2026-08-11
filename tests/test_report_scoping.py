@@ -1,7 +1,7 @@
 """
-Unit-тести розділення звітів baseline vs defended (--scope) і red_team-підпапки.
-Перевіряє, що «голий» (без scope) запуск НЕ змішує campaign-набори.
-Запуск:  pytest tests/ -v
+Unit tests for baseline vs defended report separation (--scope) and red_team subdirs.
+Verifies that a "bare" (no scope) run does NOT mix campaign sets.
+Run:  pytest tests/ -v
 """
 
 import sys
@@ -49,7 +49,7 @@ def test_defense_no_scope_excludes_campaign_sets(tmp_path, monkeypatch):
     _setup(tmp_path)
     monkeypatch.setattr(dr, "REPORTS_DIR", tmp_path)
     files = dr._collect_reports("")
-    # без scope — лише плаский легасі, БЕЗ baseline/defended (без змішування)
+    # no scope — only flat legacy, WITHOUT baseline/defended (no mixing)
     assert len(files) == 1 and files[0].endswith("ATK-flat_report.json")
     assert set(dr._scoped_sets_exist()) == {"baseline", "defended"}
 
@@ -61,5 +61,5 @@ def test_coevolution_scope_isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(cr, "REPORTS_DIR", tmp_path)
     assert len(cr._load_enriched("baseline")) == 1
     assert len(cr._load_enriched("defended")) == 1
-    # без scope — campaign-набори виключені, лишається лише плаский
+    # no scope — campaign sets excluded, only the flat one remains
     assert len(cr._load_enriched("")) == 1

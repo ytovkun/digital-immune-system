@@ -1,32 +1,32 @@
 """
-Модуль: Immune Response Engine (IRE)
-Цифрова імунна система — immune_response_engine.py
+Module: Immune Response Engine (IRE)
+Digital immune system — immune_response_engine.py
 
-Реалізує OFFLINE-цикл цифрового імунітету (SOC-агрегація):
+Implements the OFFLINE cycle of digital immunity (SOC aggregation):
   🛡 Detect → 🔍 Classify → ⚡ Respond → 🧠 Learn
 
-ДВА ВЗАЄМОДОПОВНЮВАЛЬНІ РЕЖИМИ ІМУНІТЕТУ (важливо для розуміння архітектури):
+TWO COMPLEMENTARY IMMUNITY MODES (important for understanding the architecture):
 
-  1. INLINE-режим (immune_system/immune_proxy.py) — реальний час, ПРЕВЕНЦІЯ.
-     Проксі стоїть перед Helios і БЛОКУЄ атаку до того, як вона дійде до
-     сервера (аналог вродженого+адаптивного імунітету «на кордоні»).
-     Кожне блокування пишеться у logs/immune_blocks.jsonl.
+  1. INLINE mode (immune_system/immune_proxy.py) — real time, PREVENTION.
+     The proxy sits in front of Helios and BLOCKS the attack before it reaches
+     the server (analogue of innate+adaptive immunity "at the border").
+     Every block is written to logs/immune_blocks.jsonl.
 
-  2. OFFLINE-режим (цей модуль, IRE) — постфактум, АГРЕГАЦІЯ та РЕАГУВАННЯ.
-     Аналог лімфовузла: збирає сигнали з усіх джерел (червона команда +
-     РЕАЛЬНІ inline-блокування проксі), класифікує за STRIDE/MITRE/LINDDUN,
-     визначає рівень ризику, радить патч, веде довготривалу пам'ять інцидентів.
+  2. OFFLINE mode (this module, IRE) — post-factum, AGGREGATION and RESPONSE.
+     Analogue of a lymph node: collects signals from all sources (red team +
+     REAL inline proxy blocks), classifies by STRIDE/MITRE/LINDDUN, determines
+     the risk level, recommends a patch, keeps long-term incident memory.
 
-  Інтеграція: inline-проксі ВІДВЕРТАЄ атаку та емітує інцидент → IRE його
-  ІНГЕСТУЄ (detect_from_immune_blocks), класифікує і запам'ятовує. Так дві
-  частини утворюють єдиний контур: превенція на кордоні + SOC-аналітика.
+  Integration: the inline proxy REPELS an attack and emits an incident → IRE
+  INGESTS it (detect_from_immune_blocks), classifies and remembers. So the two
+  parts form a single loop: border prevention + SOC analytics.
 
-Компоненти:
-  ThreatDetector   — виявлення інцидентів з логів, репортів та inline-блокувань
-  ThreatClassifier — класифікація за STRIDE + MITRE + LINDDUN
-  ResponseSelector — вибір дій реагування
-  ImmuneMemory     — SQLite-пам'ять про попередні атаки
-  ImmunityEngine   — головний оркестратор
+Components:
+  ThreatDetector   — detects incidents from logs, reports, and inline blocks
+  ThreatClassifier — classification by STRIDE + MITRE + LINDDUN
+  ResponseSelector — selection of response actions
+  ImmuneMemory     — SQLite memory of previous attacks
+  ImmunityEngine   — main orchestrator
 """
 
 import sys
@@ -40,7 +40,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-# ─── Конфігурація ─────────────────────────────────────────────────────────────
+# ─── Configuration ────────────────────────────────────────────────────────────
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from env_loader import load_config
@@ -53,14 +53,14 @@ REPORTS_DIR = str(PROJECT_ROOT / _cfg.get("paths", {}).get("reports_dir", "repor
 EVENTS_LOG    = Path(LOGS_DIR) / "attack_events.jsonl"
 RESPONSES_LOG = Path(LOGS_DIR) / "immune_responses.jsonl"
 MEMORY_DB     = Path(LOGS_DIR) / "immune_memory.db"
-# Лог inline-блокувань реального проксі (immune_system/immune_proxy.py) —
-# джерело РЕАЛЬНИХ відвернених атак для OFFLINE-агрегації.
+# Inline-blocks log of the real proxy (immune_system/immune_proxy.py) —
+# a source of REAL repelled attacks for OFFLINE aggregation.
 BLOCKS_LOG    = Path(LOGS_DIR) / "immune_blocks.jsonl"
 
 Path(LOGS_DIR).mkdir(exist_ok=True)
 Path(REPORTS_DIR).mkdir(exist_ok=True)
 
-# ─── Константи класифікації ────────────────────────────────────────────────────
+# ─── Classification constants ──────────────────────────────────────────────────
 
 ATTACK_SIGNATURES = {
     "ballot_stuffing": {
@@ -235,7 +235,7 @@ PATCH_RECOMMENDATIONS = {
 # ─── 1. ThreatDetector ────────────────────────────────────────────────────────
 
 class ThreatDetector:
-    """Виявляє інциденти з логів та репортів."""
+    """Detects incidents from logs and reports."""
 
     SENSITIVE_ENDPOINTS = ["/cast", "/cast_confirm", "/trustees/", "/voters/",
                            "/encrypt_tally", "/freeze", "/upload-decryption", "/auth/"]
@@ -284,7 +284,7 @@ class ThreatDetector:
                                 attack_buffer[attack_id]["sensitive_hits"].append(endpoint)
                 elif event_type == "ATTACK_COMPLETE" and attack_id in attack_buffer:
                     buf = attack_buffer.pop(attack_id)
-                    # red_team_agent v2 пише http_success_rate; підтримуємо обидва імені
+                    # red_team_agent v2 writes http_success_rate; support both names
                     success_rate = details.get("http_success_rate",
                                               details.get("success_rate", 0))
                     weighted_rate = details.get("weighted_success_rate", success_rate)
@@ -313,10 +313,10 @@ class ThreatDetector:
         incidents = []
         if not reports_dir.exists():
             return incidents
-        # Дедуплікація за attack_id: campaign пише КОЖЕН сценарій двічі
-        # (attacks/baseline/ і attacks/defended/) → без дедупу IRE подвоїв би
-        # інциденти. Тримаємо ОДИН звіт на attack_id — з МАКСИМАЛЬНИМ http-успіхом
-        # (найгірший випадок = потенціал атаки проти НЕзахищеного сервера).
+        # Deduplication by attack_id: campaign writes EACH scenario twice
+        # (attacks/baseline/ and attacks/defended/) → without dedup IRE would
+        # double the incidents. Keep ONE report per attack_id — with the MAXIMUM
+        # http success (worst case = attack potential against an UNprotected server).
         by_id = {}
         for f in sorted(reports_dir.rglob("ATK*_report.json")):
             try:
@@ -358,11 +358,11 @@ class ThreatDetector:
 
     def detect_from_immune_blocks(self, blocks_path: Path) -> list:
         """
-        Інциденти з INLINE-проксі (immune_blocks.jsonl) — РЕАЛЬНІ блокування в
-        реальному часі. На відміну від events/reports (offline-симуляція червоної
-        команди), це фактично ВІДВЕРНЕНІ атаки. Інтегрує inline-превенцію в
-        offline-агрегацію: проксі заблокував → IRE класифікує, радить патч,
-        запам'ятовує. verdict=BLOCKED, success_rate=0 (атака не дійшла до Helios).
+        Incidents from the INLINE proxy (immune_blocks.jsonl) — REAL blocks in
+        real time. Unlike events/reports (offline red-team simulation), these are
+        actually REPELLED attacks. Integrates inline prevention into offline
+        aggregation: the proxy blocked → IRE classifies, recommends a patch,
+        remembers. verdict=BLOCKED, success_rate=0 (attack did not reach Helios).
         """
         incidents = []
         if not blocks_path.exists():
@@ -381,7 +381,7 @@ class ThreatDetector:
                 attack_class = e.get("attack_class") or "unknown"
                 tier = e.get("tier", "")
                 ts   = e.get("timestamp", "")
-                # стабільний унікальний id, щоб дедуплікація не злила різні блоки
+                # stable unique id, so dedup does not merge different blocks
                 raw_id = f"{ts}|{e.get('client_ip','')}|{e.get('method','')}|{e.get('path','')}"
                 attack_id = "INLINE-" + hashlib.sha1(raw_id.encode()).hexdigest()[:10]
                 incidents.append({
@@ -394,7 +394,7 @@ class ThreatDetector:
                     "linddun":        "",
                     "declared_severity": "",
                     "timestamp":      ts,
-                    # атаку ВІДВЕРНЕНО проксі → не успішна
+                    # attack REPELLED by the proxy → not successful
                     "success_rate":   0,
                     "weighted_rate":  0,
                     "verdict":        "BLOCKED",
@@ -411,7 +411,7 @@ class ThreatDetector:
 # ─── 2. ThreatClassifier ──────────────────────────────────────────────────────
 
 class ThreatClassifier:
-    """Класифікує інцидент за STRIDE + MITRE + LINDDUN, визначає рівень ризику."""
+    """Classifies an incident by STRIDE + MITRE + LINDDUN, determines the risk level."""
 
     RISK_ORDER = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1}
 
@@ -444,17 +444,17 @@ class ThreatClassifier:
         return {"stride":"Unknown","mitre":"T0000","linddun":"L","risk_base":"Medium","keywords":[],"endpoints":[]}
 
     def _calc_risk_level(self, sig: dict, incident: dict) -> str:
-        # Базовий рівень визначає притаманна небезпека класу атаки,
-        # модулюється фактичним результатом виконання.
+        # The base level is set by the inherent danger of the attack class,
+        # modulated by the actual execution result.
         base = sig.get("risk_base", "Medium")
         base_score = self.RISK_ORDER.get(base, 2)
         success_rate = incident.get("success_rate", 0)
         weighted_rate = incident.get("weighted_rate", success_rate)
         verdict = incident.get("verdict", "")
-        # Підвищуємо лише недооцінені атаки (Low/Medium), що несподівано спрацювали
+        # Raise only underrated attacks (Low/Medium) that unexpectedly succeeded
         if base_score <= 2 and verdict == "EXECUTED" and weighted_rate >= 80:
             base_score = min(base_score + 1, 4)
-        # Знижуємо рівень, якщо атаку було заблоковано
+        # Lower the level if the attack was blocked
         elif verdict == "BLOCKED" and success_rate < 30:
             base_score = max(base_score - 1, 1)
         return ["Low", "Medium", "High", "Critical"][base_score - 1]
@@ -478,7 +478,7 @@ class ThreatClassifier:
 # ─── 3. ResponseSelector ──────────────────────────────────────────────────────
 
 class ResponseSelector:
-    """Вибирає дії реагування на основі класифікації."""
+    """Selects response actions based on the classification."""
 
     def select(self, classification: dict, incident: dict) -> dict:
         attack_class = classification.get("attack_class", "unknown")
@@ -519,7 +519,7 @@ class ResponseSelector:
 # ─── 4. ImmuneMemory ──────────────────────────────────────────────────────────
 
 class ImmuneMemory:
-    """SQLite-пам'ять імунної системи про попередні інциденти."""
+    """SQLite memory of the immune system about previous incidents."""
 
     def __init__(self, db_path: Path = MEMORY_DB):
         self.db_path = db_path
@@ -606,8 +606,8 @@ class ImmuneMemory:
 
 class ImmunityEngine:
     """
-    Головний оркестратор цифрової імунної системи.
-    Цикл: 🛡 Detect → 🔍 Classify → ⚡ Respond → 🧠 Learn
+    Main orchestrator of the digital immune system.
+    Cycle: 🛡 Detect → 🔍 Classify → ⚡ Respond → 🧠 Learn
     """
 
     def __init__(self):
@@ -692,15 +692,15 @@ class ImmunityEngine:
 
     def run(self):
         self._print_header()
-        # ─── Збір інцидентів ─────────────────────────────────────────────────
+        # ─── Collecting incidents ────────────────────────────────────────────
         print("\n  🛡 DETECT — виявлення інцидентів...")
         events_incidents  = self.detector.detect_from_events(EVENTS_LOG)
         reports_incidents = self.detector.detect_from_reports(Path(REPORTS_DIR))
-        # INLINE: реальні блокування проксі (превенція) → інгест у SOC-агрегацію
+        # INLINE: real proxy blocks (prevention) → ingest into SOC aggregation
         inline_incidents  = self.detector.detect_from_immune_blocks(BLOCKS_LOG)
-        # Дедуплікація по attack_id: репорти багатші (vulns, voter_impact),
-        # тому об'єднуємо — дані з репорту доповнюють подію з логу.
-        # inline-блоки мають унікальні id → не зливаються з симуляціями.
+        # Deduplication by attack_id: reports are richer (vulns, voter_impact),
+        # so we merge — report data augments the event from the log.
+        # inline blocks have unique ids → not merged with simulations.
         merged = {}
         order = []
         for inc in events_incidents + reports_incidents + inline_incidents:
@@ -710,7 +710,7 @@ class ImmunityEngine:
                 merged[id(inc)] = inc
                 continue
             if aid in merged:
-                # доповнюємо непорожніми полями (репорт перезаписує лог)
+                # augment with non-empty fields (report overrides the log)
                 for k, v in inc.items():
                     if v not in (None, "", [], {}):
                         merged[aid][k] = v
@@ -726,17 +726,17 @@ class ImmunityEngine:
             print("  ℹ️  Інцидентів не виявлено. Запусти red_team_agent.py або "
                   "immune_proxy.py (inline-блокування) спочатку.")
             return
-        # ─── Обробка ──────────────────────────────────────────────────────────
+        # ─── Processing ───────────────────────────────────────────────────────
         print(f"\n  🔍 CLASSIFY + ⚡ RESPOND + 🧠 LEARN — обробка {len(all_incidents)} інцидентів...")
         results = []
         for idx, inc in enumerate(all_incidents, 1):
             result = self.process_incident(inc)
             results.append(result)
             self._print_result(result, idx, len(all_incidents))
-        # ─── Підсумок ─────────────────────────────────────────────────────────
+        # ─── Summary ──────────────────────────────────────────────────────────
         self._print_summary(results)
         self._save_report(results)
-        # ─── Таблиця для дисертації ───────────────────────────────────────────
+        # ─── Dissertation table ───────────────────────────────────────────────
         diss = self._dissertation_table(results)
         print("\n" + diss)
         ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
@@ -805,9 +805,9 @@ class ImmunityEngine:
 
     def _dissertation_table(self, results: list) -> str:
         """
-        Наочна таблиця для розділу результатів дисертації: класифікація загроз
-        (STRIDE/MITRE/LINDDUN) + автоматичне реагування ЦІС + рекомендовані патчі,
-        агреговано за класом атаки. Зберігається у reports/ire/.
+        A clear table for the dissertation results chapter: threat classification
+        (STRIDE/MITRE/LINDDUN) + the DIS's automatic response + recommended patches,
+        aggregated by attack class. Saved to reports/ire/.
         """
         from collections import Counter
 

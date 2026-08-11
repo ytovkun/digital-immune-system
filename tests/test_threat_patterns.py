@@ -1,9 +1,9 @@
 """
-Unit-тести спільного каталогу сигнатур (threat_patterns).
-Фіксують поведінку після дедуплікації трьох списків патернів у одне джерело,
-включно з REGRESSION-контрактом: похідні набори L1/L2 мають точно дорівнювати
-історичним спискам (інакше дедуплікація мовчки змінила б детекцію).
-Запуск:  pytest tests/ -v
+Unit tests for the shared signature catalog (threat_patterns).
+They pin the behavior after deduplicating three pattern lists into one source,
+including a REGRESSION contract: the derived L1/L2 sets must exactly equal the
+historical lists (otherwise dedup would silently change detection).
+Run:  pytest tests/ -v
 """
 
 import sys
@@ -13,16 +13,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "immune_system")
 import threat_patterns as tp
 
 
-# ─── REGRESSION: похідні набори == історичні списки ───────────────────────────
+# ─── REGRESSION: derived sets == historical lists ─────────────────────────────
 
-# Історичний список ai_analyst._HARD_MALICIOUS_PATTERNS (до дедуплікації)
+# Historical list ai_analyst._HARD_MALICIOUS_PATTERNS (before deduplication)
 _OLD_HARD = {
     "..", "%2e%2e", "/etc/passwd", "union select", "union+select",
     "or 1=1", "or+1=1", "' or '", "<script", "</script", "{{", "${",
     "/devlogin/login", "sleep(", "waitfor", "%27", "<svg", "0x",
 }
 
-# Очікуваний набір L1-anomaly (історичний + додані XSS-обробники подій/js-URI)
+# Expected L1-anomaly set (historical + added XSS event handlers / js-URI)
 _OLD_ANOMALY = {
     "'", '"', "<script", "</", "union+select", "union select",
     "or+1=1", "or 1=1", " or '", "--", ";", "%27", "%3c", "<svg",
@@ -40,22 +40,22 @@ def test_anomaly_set_matches_legacy():
 
 
 def test_core_is_shared_by_both():
-    # ядро присутнє в обох похідних наборах (джерело єдине)
+    # the core is present in both derived sets (single source)
     for token in tp.PAYLOAD_CORE:
         assert token in tp.HARD_MALICIOUS_PATTERNS
         assert token in tp.ANOMALY_PATTERNS
 
 
 def test_hard_stays_narrow():
-    # широкі токени НЕ можна тримати у HARD (інакше кеш-отруєння /cast)
+    # broad tokens must NOT be kept in HARD (otherwise /cast cache poisoning)
     for broad in ("'", '"', ";", "--"):
         assert broad not in tp.HARD_MALICIOUS_PATTERNS
-    # але вони є в ANOMALY (маршрутизація на ШІ — безпечно)
+    # but they are in ANOMALY (routing to the AI — safe)
     for broad in ("'", '"', ";", "--"):
         assert broad in tp.ANOMALY_PATTERNS
 
 
-# ─── Хелпери ──────────────────────────────────────────────────────────────────
+# ─── Helpers ──────────────────────────────────────────────────────────────────
 
 def test_is_path_traversal():
     assert tp.is_path_traversal("/helios/x/../../etc/passwd")
@@ -75,7 +75,7 @@ def test_is_pattern_malicious():
     assert tp.is_pattern_malicious("/helios/x/../../etc/passwd", "")
     assert tp.is_pattern_malicious("/voters/?q=union select x", "")
     assert tp.is_pattern_malicious("/cast", "ignore all previous instructions")
-    # звичайний контекстний запит — НЕ pattern-malicious (не кешується)
+    # an ordinary contextual request — NOT pattern-malicious (not cached)
     assert not tp.is_pattern_malicious("/helios/elections/x/cast", '{"vote":"abc"}')
     assert not tp.is_pattern_malicious("/auth/password/login", "voter_id=x")
 

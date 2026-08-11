@@ -1,16 +1,16 @@
 """
-SIEM-порівняння, крок 2: аналіз алертів Suricata + head-to-head з ЦІС.
-Цифрова імунна система — siem/siem_compare.py
+SIEM comparison, step 2: analyze Suricata alerts + head-to-head with the DIS.
+Digital immune system — siem/siem_compare.py
 
-Читає eve.json (алерти Suricata на реплей-трафік) + reports/siem/bench_labels.json
-(мітки запитів), корелює за маркером _bid, рахує матрицю плутанини Suricata
-(TP/FN/FP/TN, P/R/F1/FPR) на ТОМУ САМОМУ наборі, що й ЦІС, і будує порівняльну
-таблицю. Показує, ДЕ сигнатурний IDS програє (поведінкові APT, prompt-injection,
-held-out новизна) — тобто перевагу ШІ-ядра ЦІС.
+Reads eve.json (Suricata alerts on the replay traffic) + reports/siem/bench_labels.json
+(request labels), correlates by the _bid marker, computes the Suricata confusion
+matrix (TP/FN/FP/TN, P/R/F1/FPR) on the SAME set as the DIS, and builds a
+comparison table. Shows WHERE a signature IDS loses (behavioral APT,
+prompt-injection, held-out novelty) — i.e. the advantage of the DIS AI core.
 
-Запуск:  python siem/siem_compare.py [шлях/до/eve.json]
-         (типово: reports/siem/suricata/eve.json)
-Вихід:   таблиця + reports/siem/siem_comparison_{ts}.json + .txt
+Run:  python siem/siem_compare.py [path/to/eve.json]
+      (default: reports/siem/suricata/eve.json)
+Out:  table + reports/siem/siem_comparison_{ts}.json + .txt
 """
 
 import os
@@ -30,24 +30,24 @@ REPORTS = ROOT / _cfg.get("paths", {}).get("reports_dir", "reports")
 SIEM_DIR = REPORTS / "siem"
 
 _BID_RE = re.compile(r"_bid=(\d+)")
-# Wazuh логує КОЖЕН веб-запит; реальна детекція атаки — правило рівня ≥ цього порогу.
+# Wazuh logs EVERY web request; real attack detection = a rule of level ≥ this threshold.
 WAZUH_MIN_LEVEL = 6
 
-# APT сигнатурного SIEM = «0/3 ЗА ПОБУДОВОЮ», а не виміряні 0 із 3. Обґрунтування:
-# APT — це багатокрокова ТРАЄКТОРІЯ (recon→логін→дія), де окремі кроки не містять
-# payload (звичайні GET/POST), тож не тригерять web-attack правила (rule id 31100+).
-# Host-based SIEM без correlation-правила на послідовність фізично не може дати >0.
-# ЦІС натомість бачить траєкторію актора (серверний сигнал) і виносить рішення ШІ.
+# A signature SIEM's APT = "0/3 BY CONSTRUCTION", not a measured 0 of 3. Rationale:
+# APT is a multi-step TRAJECTORY (recon→login→action) where individual steps carry
+# no payload (ordinary GET/POST), so they do not trigger web-attack rules (rule id 31100+).
+# A host-based SIEM without a correlation rule on the sequence physically cannot give >0.
+# The DIS instead sees the actor's trajectory (a server signal) and issues an AI decision.
 SIEM_APT_DETECTED = "0/3"
 SIEM_APT_NOTE = ("0/3 за побудовою: сигнатурний SIEM не має correlation-правила на "
                  "багатокрокову траєкторію (recon→дія); окремі кроки APT без payload "
                  "не тригерять web-attack правила — це структурне обмеження, не вимір.")
 
-# Пояснення, ЧОМУ Precision(SIEM)=1.0 попри низьку детекцію (аргумент для звіту):
-# Precision=TP/(TP+FP) вимірює ХИБНІ ТРИВОГИ, а не пропуски. Wazuh не дав жодної
-# хибної тривоги (FP=0) → Precision=1.0 математично коректно. Його слабкість —
-# ПРОПУСКИ (FN), що відображаються у RECALL та F1, а не в Precision. Тому headline
-# порівняння — Recall/F1, а Precision=1.0 не слід читати як «SIEM хороший».
+# Explanation of WHY Precision(SIEM)=1.0 despite low detection (an argument for the report):
+# Precision=TP/(TP+FP) measures FALSE ALARMS, not misses. Wazuh raised no false
+# alarm (FP=0) → Precision=1.0 is mathematically correct. Its weakness is the
+# MISSES (FN), reflected in RECALL and F1, not in Precision. So the headline of the
+# comparison is Recall/F1, and Precision=1.0 should not be read as "the SIEM is good".
 SIEM_PRECISION_NOTE = ("Precision=1.0 бо SIEM не дав ХИБНИХ тривог (FP=0); Precision "
                        "не вимірює пропуски. Слабкість SIEM — у Recall/F1 (пропустив "
                        "більшість атак). Headline порівняння — саме Recall та F1.")
@@ -85,8 +85,8 @@ def _parse_logtest(text: str) -> dict:
         mbid = _BID_RE.search(blk)
         if not mbid:
             continue
-        # шукаємо у секції правил (Phase 3). Wazuh 4.x пише 'id:'/'level:',
-        # старий ossec — 'Rule id:'/'Level:'. Підтримуємо обидва (\bid: ловить і те, й те).
+        # look in the rules section (Phase 3). Wazuh 4.x writes 'id:'/'level:',
+        # old ossec — 'Rule id:'/'Level:'. Support both (\bid: catches either).
         p3 = blk.split("Phase 3")[-1] if "Phase 3" in blk else blk
         mlvl = re.search(r"\blevel:\s*'?(\d+)", p3, re.I)
         mid = re.search(r"\bid:\s*'?(\d+)", p3, re.I)
@@ -106,7 +106,7 @@ def _alerted_bids(path: Path) -> tuple:
     if not path.exists():
         return "?", hits
     raw = path.read_text(encoding="utf-8", errors="replace")
-    # текстовий вивід wazuh-logtest (не JSON) → окремий парсер
+    # text output of wazuh-logtest (not JSON) → a separate parser
     if "**Phase" in raw or "full event:" in raw or "Rule id:" in raw:
         return "Wazuh", _parse_logtest(raw)
     events = _load_events(path)
@@ -178,7 +178,7 @@ def main():
 
     sm = _metrics(TP, FN, FP, TN)
 
-    # ЦІС — з останнього benchmark
+    # DIS — from the latest benchmark
     dis = {}
     bf = sorted(glob.glob(str(REPORTS / "benchmark" / "benchmark_*.json")))
     if bf:
@@ -244,7 +244,7 @@ def main():
         "",
         f"{'Метрика':<22}{tool_col:>18}{'ЦІС':>12}",
         "─" * 54,
-        # headline — Recall/F1 (саме тут видно слабкість SIEM); Precision нижче з виноскою
+        # headline — Recall/F1 (this is where the SIEM's weakness shows); Precision below with a footnote
         f"{'Recall / Detection':<22}{sm['recall']:>18}{_d_rec:>12}",
         f"{'F1':<22}{sm['f1']:>18}{_d_f1:>12}",
         f"{'Precision **':<22}{sm['precision']:>18}{_d_prec:>12}",

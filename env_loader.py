@@ -1,12 +1,12 @@
 """
-Модуль: env_loader — спільні утиліти конфігурації
-Цифрова імунна система — env_loader.py
+Module: env_loader — shared configuration utilities
+Digital immune system — env_loader.py
 
-Єдине джерело логіки завантаження:
-  load_env()    — парсер .env (ключ ANTHROPIC_API_KEY тощо) в os.environ
-  load_config() — пошук і читання config.json (walk-up до кореня проєкту)
+Single source of loading logic:
+  load_env()    — .env parser (ANTHROPIC_API_KEY key, etc.) into os.environ
+  load_config() — find and read config.json (walk-up to the project root)
 
-Усуває дублювання _load_config у кожному модулі (DRY). Використання:
+Removes duplication of _load_config in every module (DRY). Usage:
     import sys; from pathlib import Path
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from env_loader import load_config, load_env
@@ -20,7 +20,7 @@ from pathlib import Path
 
 
 def find_root(start: Path = None) -> Path:
-    """Знаходить корінь проєкту (теку з config.json), walk-up від файлу."""
+    """Find the project root (the dir with config.json), walking up from the file."""
     here = (start or Path(__file__)).resolve().parent
     for d in [here, *here.parents]:
         if (d / "config.json").exists():
@@ -29,7 +29,7 @@ def find_root(start: Path = None) -> Path:
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
-    """Рекурсивно зливає override у base (для перевизначень config.local.json)."""
+    """Recursively merge override into base (for config.local.json overrides)."""
     for k, v in override.items():
         if isinstance(v, dict) and isinstance(base.get(k), dict):
             _deep_merge(base[k], v)
@@ -40,19 +40,19 @@ def _deep_merge(base: dict, override: dict) -> dict:
 
 def load_config(start: Path = None) -> dict:
     """
-    Завантажує config.json з кореня проєкту. Додає ключ '_root' з абсолютним
-    шляхом до кореня — щоб модулі будували абсолютні шляхи незалежно від CWD.
+    Load config.json from the project root. Adds a '_root' key with the absolute
+    path to the root — so modules build absolute paths regardless of CWD.
 
-    Якщо поруч є config.local.json (у .gitignore) — його значення мають
-    пріоритет (deep-merge). Туди виносяться СЕКРЕТИ (паролі виборців тощо),
-    щоб не комітити їх у репозиторій. Див. config.local.json.example.
+    If config.local.json exists alongside (in .gitignore) — its values take
+    priority (deep-merge). SECRETS (voter passwords, etc.) are moved there so
+    they are not committed to the repository. See config.local.json.example.
     """
     root = find_root(start)
     cfg_path = root / "config.json"
     if not cfg_path.exists():
         return {"_root": str(root)}
     cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-    # Локальні перевизначення (секрети, поза git) мають пріоритет
+    # Local overrides (secrets, outside git) take priority
     local_path = root / "config.local.json"
     if local_path.exists():
         try:
@@ -65,9 +65,9 @@ def load_config(start: Path = None) -> dict:
 
 def load_env(start: Path = None) -> bool:
     """
-    Знаходить .env (walk-up) і завантажує змінні в os.environ.
-    Повертає True, якщо файл знайдено й оброблено.
-    Існуючі змінні оточення мають пріоритет (не перезаписуються).
+    Find .env (walk-up) and load variables into os.environ.
+    Returns True if the file was found and processed.
+    Existing environment variables take priority (are not overwritten).
     """
     here = (start or Path(__file__)).resolve().parent
     for d in [here, *here.parents]:
@@ -81,7 +81,7 @@ def load_env(start: Path = None) -> bool:
 def _parse_into_environ(env_path: Path):
     for raw in env_path.read_text(encoding="utf-8").splitlines():
         line = raw.strip()
-        # пропускаємо порожні рядки та коментарі
+        # skip empty lines and comments
         if not line or line.startswith("#"):
             continue
         if "=" not in line:
@@ -89,6 +89,6 @@ def _parse_into_environ(env_path: Path):
         key, _, value = line.partition("=")
         key = key.strip()
         value = value.strip().strip('"').strip("'")
-        # не перезаписуємо те, що вже є в реальному оточенні
+        # do not overwrite what is already in the real environment
         if key and key not in os.environ:
             os.environ[key] = value
