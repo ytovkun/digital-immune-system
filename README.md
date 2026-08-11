@@ -152,7 +152,12 @@ cp config.local.json.example config.local.json   # потім впиши реа�
 ```bash
 # ПОВНИЙ звіт «без захисту vs із захистом» ОДНІЄЮ командою (наповнює весь дашборд).
 # Helios :8001 підніми заздалегідь; проксі :8000 підіймається САМ:
-python run_all.py campaign --skip-generate
+python run_all.py campaign
+#
+# ⚠️ --skip-generate ПРОПУСКАЄ генерацію сценаріїв (Claude) і ПЕРЕВИКОРИСТОВУЄ вже
+#    наявні у scenarios/. Додавай ЛИШЕ якщо ти вже генерував їх раніше — на чистій
+#    системі scenarios/ порожня (у .gitignore), тож виконувати буде нічого → порожній
+#    дашборд. Для першого/повного прогону запускай БЕЗ цього прапора.
 
 # Ко-еволюційний цикл: мутувати атаки під блокування ЦІС → виконати → метрика поколінь
 # (передумова: вже є defended-звіти з campaign):
@@ -183,15 +188,16 @@ python run_all.py --score --ire --metrics
 | `analyze` | score → ire → metrics (лише reports/) | ні |
 | `test` | pytest | ні |
 
-**Флаги:** `--with-defense` (підняти проксі у фоні) · `--skip-generate` /
-`--skip-execute` · `--clean` · `--keep-going`.
+**Флаги:** `--with-defense` (підняти проксі у фоні) · `--skip-generate`
+(пропустити генерацію Claude, ПЕРЕВИКОРИСТАТИ наявні scenarios/ — потребує вже
+згенерованих сценаріїв) · `--skip-execute` · `--clean` · `--keep-going`.
 
 ### Фінальний атомарний прогін (для розділу 3)
 
 ```bash
 lsof -ti:8000 | xargs kill 2>/dev/null                    # звільнити порт
-python utils/cleaner.py --keep-scenarios --yes            # чистий reports/ (сценарії лишити)
-python run_all.py campaign --skip-generate                # gen-0 + весь дашборд
+python utils/cleaner.py --yes                             # повністю чистий reports/ + scenarios/
+python run_all.py campaign                                # генерація + весь дашборд (gen-0)
 python run_all.py coevolve                                # gen-1 (мутовані атаки)
 python run_all.py --score --ire --metrics                # перерахунок із gen-1
 python utils/run_manifest.py                              # єдиний маніфест прогону
