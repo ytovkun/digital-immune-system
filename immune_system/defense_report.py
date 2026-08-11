@@ -1,22 +1,22 @@
 """
-Модуль: DefenseReport — звіт ефективності захисту ЦІС
-Цифрова імунна система — immune_system/defense_report.py
+Module: DefenseReport — DIS defense effectiveness report
+Digital immune system — immune_system/defense_report.py
 
-Міряє ПРАВИЛЬНУ метрику: чи дійшла НЕБЕЗПЕЧНА операція до Helios,
-а не «чи закінчив атакувальник свій скрипт» (вердикт red_team_agent).
+Measures the CORRECT metric: did a DANGEROUS operation reach Helios,
+not "did the attacker finish their script" (the red_team_agent verdict).
 
-Логіка:
-  - критичні операції = POST на /cast, /cast_confirm, /upload-decryption,
-    /encrypt_tally (саме вони завдають шкоди: вкидання голосу, підміна ключів)
-  - для кожної атаки: скільки критичних операцій було ЗАБЛОКОВАНО (403)
-    проксі, скільки дійшло до Helios, скільки взагалі немає (атака поза сервером)
+Logic:
+  - critical operations = POST to /cast, /cast_confirm, /upload-decryption,
+    /encrypt_tally (these cause the harm: ballot stuffing, key swap)
+  - for each attack: how many critical operations were BLOCKED (403) by the
+    proxy, how many reached Helios, how many are absent (attack off-server)
 
-Джерела:
-  reports/ATK*_report.json   — кроки атак та їх HTTP-статуси
-  logs/immune_blocks.jsonl   — рішення проксі (хто, чим, на якому рівні)
+Sources:
+  reports/ATK*_report.json   — attack steps and their HTTP statuses
+  logs/immune_blocks.jsonl   — proxy decisions (who, what, at which tier)
 
-Запуск:  python immune_system/defense_report.py
-Вихід:   таблиця + reports/defense_effectiveness_{ts}.json
+Run:  python immune_system/defense_report.py
+Out:  table + reports/defense_effectiveness_{ts}.json
 """
 
 import sys
@@ -39,11 +39,11 @@ REPORTS_DIR = ROOT / _cfg.get("paths", {}).get("reports_dir", "reports")
 LOGS_DIR    = ROOT / _cfg.get("paths", {}).get("logs_dir", "logs")
 BLOCKS_LOG  = LOGS_DIR / "immune_blocks.jsonl"
 
-# Критичні операції — саме вони завдають реальної шкоди
+# Critical operations — these cause the real harm
 CRITICAL_OPS = ("/cast", "/cast_confirm", "/upload-decryption", "/encrypt_tally")
 
-# Атаки, які за природою НЕ блокуються на серверному проксі
-# (відбуваються між людьми, у браузері жертви або на мережевому рівні)
+# Attacks that by nature are NOT blocked at the server proxy
+# (they happen between people, in the victim's browser, or at the network level)
 OFF_SERVER_CLASSES = {
     "voter_timing_deanonymization":  "мережевий рівень (ISP-перехоплення)",
     "voter_coercion_receipt":        "примус між людьми (поза сервером)",
@@ -63,7 +63,7 @@ def load_blocks() -> list:
 
 
 def analyze_report(report: dict) -> dict:
-    """Рахує критичні операції: заблоковані / пропущені до Helios."""
+    """Count critical operations: blocked / reached Helios."""
     crit_blocked = 0
     crit_reached = 0
     crit_steps = []
@@ -75,13 +75,14 @@ def analyze_report(report: dict) -> dict:
         if any(op in ep for op in CRITICAL_OPS):
             status = r.get("status_code")
             op_name = ep.rstrip("/").split("/")[-1]
-            # Метрика — «чи ДІЙШЛА небезпечна операція до Helios»:
-            #   403       → проксі заблокував (не дійшло) = prevented;
-            #   None      → запит не завершився (ланцюг атаки зламано раннім блоком,
-            #               крок до крит-операції не дійшов) = теж НЕ дійшло = prevented;
-            #   реальна відповідь backend (2xx/3xx/5xx, не 403) → ДІЙШЛО = leaked.
-            # (None як prevented робить baseline↔defended симетричними: однакова к-сть
-            #  крит-кроків, різниця лише в тому, СКІЛЬКИ дійшло до Helios.)
+            # Metric — "did the dangerous operation REACH Helios":
+            #   403       → proxy blocked it (did not reach) = prevented;
+            #   None      → request did not complete (attack chain broken by an early
+            #               block, the step never reached the crit op) = also NOT
+            #               reached = prevented;
+            #   real backend response (2xx/3xx/5xx, not 403) → REACHED = leaked.
+            # (None as prevented makes baseline↔defended symmetric: the same number of
+            #  crit steps, differing only in HOW MANY reached Helios.)
             if status == 403 or status is None:
                 crit_blocked += 1
                 crit_steps.append(f"{op_name}:{'БЛОК' if status == 403 else 'обірвано'}")
@@ -101,10 +102,10 @@ def analyze_report(report: dict) -> dict:
 
 def classify_defense(a: dict) -> str:
     """
-    Підсумковий статус захисту для атаки:
-      NEUTRALIZED — всі критичні операції заблоковано
-      LEAKED      — частина критичних операцій дійшла до Helios
-      OFF_SERVER  — атака поза зоною серверного проксі (немає критичних HTTP)
+    Final defense status for an attack:
+      NEUTRALIZED — all critical operations blocked
+      LEAKED      — some critical operations reached Helios
+      OFF_SERVER  — attack outside the server-proxy zone (no critical HTTP)
     """
     if a["crit_total"] == 0:
         return "OFF_SERVER" if a["attack_class"] in OFF_SERVER_CLASSES else "NO_CRITICAL"
@@ -115,15 +116,16 @@ def classify_defense(a: dict) -> str:
     return "LEAKED"
 
 
-SCOPED_SUBDIRS = ("baseline", "defended")   # campaign-набори (дивляться з --scope)
+SCOPED_SUBDIRS = ("baseline", "defended")   # campaign sets (viewed with --scope)
 
 
 def _collect_reports(scope: str) -> list:
-    """Звіти за областю: scope='baseline'|'defended' → лише reports/attacks/<scope>/;
-    порожній scope → усі, АЛЕ БЕЗ campaign-наборів (щоб не змішати baseline+defended).
-    ВИКЛЮЧАЄМО adaptive-звіти (*_adaptive_report.json): цей звіт міряє ЕФЕКТИВНІСТЬ
-    на БАЗОВОМУ наборі атак (щоб bypass-атаки з 0 крит-операцій не «затирали» базові
-    при дедуплікації по класу). Еволюцію (gen-1) міряє coevolution_report."""
+    """Reports by scope: scope='baseline'|'defended' → only reports/attacks/<scope>/;
+    empty scope → all, BUT WITHOUT campaign sets (so baseline+defended are not mixed).
+    EXCLUDE adaptive reports (*_adaptive_report.json): this report measures
+    EFFECTIVENESS on the BASE attack set (so bypass attacks with 0 crit ops do not
+    "overwrite" base ones during per-class dedup). Evolution (gen-1) is measured by
+    coevolution_report."""
     if scope:
         base = REPORTS_DIR / "attacks" / scope
         files = glob.glob(str(base / "**" / "ATK*_report.json"), recursive=True)
@@ -162,7 +164,7 @@ def main():
     blocks = load_blocks()
     analyses = [analyze_report(json.load(open(f, encoding="utf-8"))) for f in reports]
 
-    # Дедуплікація: останній звіт по кожному класу
+    # Deduplication: the latest report per class
     by_class = {}
     for a in analyses:
         by_class[a["attack_class"]] = a
@@ -198,7 +200,7 @@ def main():
 
     print(f"\n  {'─'*80}")
 
-    # ─── Зведення ──────────────────────────────────────────────────────────────
+    # ─── Summary ────────────────────────────────────────────────────────────────
     neutralized = counts["NEUTRALIZED"] + counts["PARTIAL_BLOCK"]
     off_server  = counts["OFF_SERVER"] + counts["NO_CRITICAL"]
     leaked      = counts["LEAKED"]
@@ -210,9 +212,9 @@ def main():
     print(f"     🛡  Нейтралізовано (критична операція заблокована): {neutralized}/{total}")
     print(f"     🌐 Поза зоною серверного захисту (мережа/браузер/люди): {off_server}/{total}")
     print(f"     🔴 Пропущено (атака дійшла до Helios): {leaked}/{total}")
-    # Явний перелік «поза сервером» — щоб рецензент не сприйняв їх як «пропущені»:
-    # це атаки мережевого/браузерного/людського рівня, які серверний проксі НЕ
-    # перехоплює за визначенням (не «дірка», а межа застосовності).
+    # Explicit list of "off-server" — so a reviewer does not read them as "leaked":
+    # these are network/browser/human-level attacks that the server proxy does NOT
+    # intercept by definition (not a "hole" but a boundary of applicability).
     off_classes = sorted({a["attack_class"] for a in analyses
                           if classify_defense(a) in ("OFF_SERVER", "NO_CRITICAL")})
     if off_classes:
@@ -223,7 +225,7 @@ def main():
           f"({crit_blocked_total/(crit_blocked_total+crit_reached_total)*100:.0f}%)"
           if (crit_blocked_total + crit_reached_total) else "")
 
-    # ─── Статистика проксі ─────────────────────────────────────────────────────
+    # ─── Proxy statistics ───────────────────────────────────────────────────────
     if blocks:
         by_tier = Counter(b.get("tier", "?") for b in blocks)
         by_attack = Counter(b.get("attack_class", "?") for b in blocks)
@@ -238,7 +240,7 @@ def main():
     print("     скрипт» (рахуючи безпечну розвідку+логін), а ЦІС блокує лише НЕБЕЗПЕЧНУ")
     print("     операцію. Розвідка проходить — вкидання голосу НІ.")
 
-    # ─── Збереження ────────────────────────────────────────────────────────────
+    # ─── Saving ─────────────────────────────────────────────────────────────────
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     out = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -260,12 +262,12 @@ def main():
     }
     defense_dir = REPORTS_DIR / "defense"
     defense_dir.mkdir(parents=True, exist_ok=True)
-    tag = f"{scope}_" if scope else ""   # baseline/defended не перезаписують одне одного
+    tag = f"{scope}_" if scope else ""   # baseline/defended do not overwrite each other
     out_path = defense_dir / f"defense_effectiveness_{tag}{ts}.json"
     out_path.write_text(json.dumps(out, ensure_ascii=False, indent=2))
     print(f"\n  [+] Звіт збережено: {out_path}")
 
-    # ─── Таблиця для дисертації (.txt) ─────────────────────────────────────────
+    # ─── Dissertation table (.txt) ──────────────────────────────────────────────
     STATUS_TXT = {
         "NEUTRALIZED": "НЕЙТРАЛІЗОВАНО", "PARTIAL_BLOCK": "ЧАСТКОВО",
         "LEAKED": "ПРОПУЩЕНО", "OFF_SERVER": "ПОЗА СЕРВЕРОМ", "NO_CRITICAL": "немає критич.",

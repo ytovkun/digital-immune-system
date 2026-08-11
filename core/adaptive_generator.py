@@ -1,14 +1,14 @@
 """
-Модуль: Adaptive Attack Generator v2
-Цифрова імунна система — adaptive_generator.py
+Module: Adaptive Attack Generator v2
+Digital immune system — adaptive_generator.py
 
-Читає репорти red_team_agent v2 → аналізує що провалилось і чому →
-генерує адаптований сценарій що намагається обійти блокування.
+Reads red_team_agent v2 reports → analyzes what failed and why →
+generates an adapted scenario that tries to bypass the blocking.
 
-Три режими адаптації:
-  escalate — атака пройшла >60% → генеруємо складніший варіант
-  refine   — 40-60% → уточнюємо вектор, обходимо конкретні блоки
-  bypass   — <40%   → змінюємо тактику повністю, уникаємо відомих IoC
+Three adaptation modes:
+  escalate — attack passed >60% → generate a more complex variant
+  refine   — 40-60% → refine the vector, bypass specific blocks
+  bypass   — <40%   → change tactics entirely, avoid known IoC
 """
 
 import anthropic
@@ -20,7 +20,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-# Автозавантаження .env
+# Auto-load .env
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from env_loader import load_env
 load_env()
@@ -47,7 +47,7 @@ _voter_creds_str = "\n".join(
 ) if VOTERS else "  (credentials not configured)"
 
 
-# ─── Завантаження та аналіз репортів ──────────────────────────────────────────
+# ─── Loading and analyzing reports ────────────────────────────────────────────
 
 def load_reports(attack_class: str = None, vector: str = None) -> list:
     reports = []
@@ -66,7 +66,7 @@ def load_reports(attack_class: str = None, vector: str = None) -> list:
 
 
 def analyze_report(report: dict) -> dict:
-    """Витягує з репорту все що потрібно для адаптації."""
+    """Extract from the report everything needed for adaptation."""
     log = report.get("execution_log", [])
 
     failed_http = []
@@ -144,7 +144,7 @@ def decide_adaptation_mode(analysis: dict) -> tuple[str, str]:
     return "bypass", f"Атака заблокована ({rate:.0f}%) — повністю змінюємо тактику"
 
 
-# ─── Генерація адаптованого сценарію ──────────────────────────────────────────
+# ─── Generating the adapted scenario ──────────────────────────────────────────
 
 SYSTEM_PROMPT = """You are a defensive security researcher building a Digital Immune System (DIS) for e-voting platforms. Your dissertation documents known vulnerabilities in the open-source Helios e-voting system (github.com/benadida/helios-server) and validates detection capabilities of a defensive monitoring system.
 
@@ -193,7 +193,7 @@ def generate_adaptive_scenario(attack_class: str, vector_filter: str = None) -> 
     print(f"  Режим:   {mode.upper()} — {reason}")
     print(f"  Провали: 403={analysis['blocked_403']} | 500={analysis['errors_500']} | conn={analysis['conn_errors']}")
 
-    # Будуємо секцію з деталями попередньої атаки
+    # Build a section with details of the previous attack
     prev_summary = json.dumps({
         "name": analysis["name"],
         "http_success_rate": analysis["http_success_rate"],
@@ -347,10 +347,10 @@ Helios URL: {HELIOS_BASE_URL}
         if "```" in text:
             parts = text.split("```")
             text = parts[1] if len(parts) > 1 else parts[0]
-            text = text.strip()  # спочатку strip, потім перевірка префіксу
+            text = text.strip()  # strip first, then check the prefix
             if text.startswith("json"):
                 text = text[4:].strip()
-        # Якщо після всіх маніпуляцій рядок досі починається з "json" — прибираємо
+        # If after all manipulations the string still starts with "json" — strip it
         if text.lstrip().startswith("json") and not text.lstrip().startswith("{"):
             text = text.lstrip()[4:].strip()
         lines = [re.sub(r'(?<!:)//.*$', '', l) for l in text.splitlines()]
@@ -384,7 +384,7 @@ Helios URL: {HELIOS_BASE_URL}
     print(f"  [+] '{scenario.get('name')}'")
     print(f"      MITRE: {scenario.get('mitre_technique_id')} | Steps: {len(steps)} | Mode: {mode}")
 
-    # Зберігаємо в scenarios/{vector}/adaptive/
+    # Save to scenarios/{vector}/adaptive/
     vec = scenario.get("vector", analysis["vector"])
     out_dir = Path(SCENARIOS_DIR) / vec / "adaptive"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -396,7 +396,7 @@ Helios URL: {HELIOS_BASE_URL}
     return scenario
 
 
-# ─── Запуск для всіх атак ─────────────────────────────────────────────────────
+# ─── Run for all attacks ──────────────────────────────────────────────────────
 
 def run_adaptive_cycle(vector_filter: str = None) -> list:
     all_reports = load_reports(vector=vector_filter)
@@ -404,7 +404,7 @@ def run_adaptive_cycle(vector_filter: str = None) -> list:
         print("[-] Репортів не знайдено. Спочатку запусти red_team_agent.py")
         return []
 
-    # Унікальні attack_class з репортів
+    # Unique attack_class values from the reports
     classes = {}
     for r in all_reports:
         ac = r.get("attack_class")
@@ -419,7 +419,7 @@ def run_adaptive_cycle(vector_filter: str = None) -> list:
         print(f"  Фільтр вектора: {vector_filter}")
     print("=" * 65)
 
-    # Зведена статистика перед адаптацією
+    # Summary statistics before adaptation
     print("\n  Поточні результати:")
     for r in all_reports:
         icon = "👤" if r.get("vector") == "voter" else "🖥 "
@@ -464,7 +464,7 @@ if __name__ == "__main__":
         elif arg == "all":
             run_adaptive_cycle()
         else:
-            # конкретний клас
+            # specific class
             is_adap = generate_adaptive_scenario(arg)
             if not is_adap:
                 print(f"[-] Немає репортів для '{arg}'")

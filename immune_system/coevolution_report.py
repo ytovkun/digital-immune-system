@@ -1,23 +1,25 @@
 """
-Модуль: CoevolutionReport — метрика ко-еволюції «щит vs меч»
-Цифрова імунна система — immune_system/coevolution_report.py
+Module: CoevolutionReport — the "shield vs sword" co-evolution metric
+Digital immune system — immune_system/coevolution_report.py
 
-Показує ДИНАМІКУ протистояння поколінь атак і захисту — головний науковий
-артефакт дисертації: GenAI-генератор мутує атаку під блокування (adaptive_generator
-читає 403 → escalate/refine/bypass), а ЦІС тримає захист і вчить нові сигнатури.
+Shows the DYNAMICS of the confrontation between generations of attacks and
+defense — the main scientific artifact of the dissertation: a GenAI generator
+mutates the attack under blocking (adaptive_generator reads 403 →
+escalate/refine/bypass), while the DIS holds the defense and learns new signatures.
 
-Покоління:
-  gen-0 (baseline) — звіти БЕЗ adaptation_mode (вихідні згенеровані атаки)
-  gen-1 (adaptive) — звіти З adaptation_mode (escalate/refine/bypass під тиском блоку)
+Generations:
+  gen-0 (baseline) — reports WITHOUT adaptation_mode (original generated attacks)
+  gen-1 (adaptive) — reports WITH adaptation_mode (escalate/refine/bypass under blocking pressure)
 
-Для кожного покоління рахується частка НЕЙТРАЛІЗОВАНИХ vs ПРОПУЩЕНИХ (через
-defense_report — джерело істини «дійшла критична операція до Helios чи ні»).
+For each generation the share of NEUTRALIZED vs LEAKED is computed (via
+defense_report — the source of truth for "did a critical operation reach Helios").
 
-ВАЖЛИВО: значущі цифри виходять лише якщо атаки прогнані ЧЕРЕЗ проксі :8000
-(інакше всі статуси 200 і все «пропущено»). Скрипт це детектує і підкаже.
+IMPORTANT: meaningful numbers appear only if attacks were run THROUGH the :8000
+proxy (otherwise all statuses are 200 and everything is "leaked"). The script
+detects this and hints.
 
-Запуск:  python immune_system/coevolution_report.py
-Вихід:   таблиця + reports/coevolution/coevolution_{ts}.json + .txt
+Run:  python immune_system/coevolution_report.py
+Out:  table + reports/coevolution/coevolution_{ts}.json + .txt
 """
 
 import sys
@@ -38,7 +40,7 @@ _cfg = load_config()
 ROOT = Path(_cfg.get("_root", Path(__file__).resolve().parent.parent))
 REPORTS_DIR = ROOT / _cfg.get("paths", {}).get("reports_dir", "reports")
 
-# Статуси, що означають «критична операція зупинена захистом»
+# Statuses meaning "critical operation stopped by the defense"
 _NEUTRALIZED = {"NEUTRALIZED", "PARTIAL_BLOCK"}
 _LEAKED = {"LEAKED"}
 
@@ -47,9 +49,9 @@ SCOPED_SUBDIRS = ("baseline", "defended")
 
 
 def _load_enriched(scope: str = "") -> list:
-    """Завантажує ATK-звіти, додає generation + статус захисту.
-    scope='defended'|'baseline' → лише reports/attacks/<scope>/; порожньо = усі,
-    АЛЕ БЕЗ campaign-наборів (щоб не змішати baseline+defended в одній метриці)."""
+    """Load ATK reports, add generation + defense status.
+    scope='defended'|'baseline' → only reports/attacks/<scope>/; empty = all,
+    BUT WITHOUT campaign sets (so baseline+defended are not mixed in one metric)."""
     if scope:
         base = REPORTS_DIR / "attacks" / scope
         files = sorted(glob.glob(str(base / "**" / "ATK*_report.json"), recursive=True),
@@ -74,14 +76,14 @@ def _load_enriched(scope: str = "") -> list:
 
 
 def _gen_stats(items: list) -> dict:
-    """Зведення по поколінню. Головна метрика — HELD: скільки атак НЕ пропустили
-    жодної небезпечної операції до Helios (crit_reached==0). Так коректно рахуються
-    і bypass-атаки, що ВЗАГАЛІ уникають критичних операцій (0 крит → 0 leaked = held):
-    захист змусив атаку відступити від прямої шкоди. Метрика 'block %' лишається для
-    атак, що ВСЕ Ж намагались крит-операцію (де вона визначена)."""
+    """Summary per generation. Main metric — HELD: how many attacks let NONE of the
+    dangerous operations reach Helios (crit_reached==0). This correctly counts
+    bypass attacks that AVOID critical operations entirely (0 crit → 0 leaked = held):
+    the defense forced the attack to retreat from direct harm. The 'block %' metric
+    remains for attacks that DID attempt a critical op (where it is defined)."""
     total = len(items)
-    leaked = sum(1 for a in items if a["crit_reached"] > 0)   # ≥1 небезпечна оп дійшла
-    held = total - leaked                                      # 0 небезпечних оп дійшло
+    leaked = sum(1 for a in items if a["crit_reached"] > 0)   # ≥1 dangerous op reached
+    held = total - leaked                                      # 0 dangerous ops reached
     with_crit = [a for a in items if a["crit_total"] > 0]
     crit_blocked = sum(a["crit_blocked"] for a in items)
     crit_total = sum(a["crit_total"] for a in items)
@@ -90,7 +92,7 @@ def _gen_stats(items: list) -> dict:
         "attacks_with_critical": len(with_crit),
         "held": held,
         "leaked": leaked,
-        # neutralized_pct = held_pct (0 небезпечних операцій дійшло) — визначено ЗАВЖДИ
+        # neutralized_pct = held_pct (0 dangerous ops reached) — ALWAYS defined
         "neutralized_pct": round(held / total * 100, 1) if total else None,
         "held_pct": round(held / total * 100, 1) if total else None,
         "leaked_pct": round(leaked / total * 100, 1) if total else None,
@@ -142,7 +144,7 @@ def main():
               if s["critical_ops_total"] else "немає (bypass уникає)")
         print(f"  {label:<22}{s['attacks']:>6}{held:>14}{lk:>12}{br:>16}")
 
-    # Розбивка adaptive за режимом мутації (escalate/refine/bypass)
+    # Breakdown of adaptive by mutation mode (escalate/refine/bypass)
     if gen1:
         print("\n  ── Режими адаптації (під тиском блокувань) ──")
         by_mode = defaultdict(list)
@@ -153,7 +155,7 @@ def main():
             br = f"{sm['critical_ops_blocked']}/{sm['critical_ops_total']}" if sm["critical_ops_total"] else "немає крит."
             print(f"     {mode:<12} атак={sm['attacks']:<3} блок крит.оп={br}")
 
-    # Класи, де захист тримається крізь покоління (по attack_class)
+    # Classes where the defense holds across generations (by attack_class)
     print("\n  ── Стійкість захисту по класах (gen-0 → gen-1) ──")
     classes = sorted({a["attack_class"] for a in items if a["crit_total"] > 0})
     for ac in classes:
@@ -167,7 +169,7 @@ def main():
 
     print("=" * 84)
 
-    # ─── Збереження ─────────────────────────────────────────────────────────────
+    # ─── Saving ─────────────────────────────────────────────────────────────────
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     out = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -185,7 +187,7 @@ def main():
         json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"\n  [+] Звіт збережено: reports/coevolution/coevolution_{tag}{ts}.json")
 
-    # ─── Таблиця для дисертації ─────────────────────────────────────────────────
+    # ─── Dissertation table ─────────────────────────────────────────────────────
     tbl = [
         "ТАБЛИЦЯ 3.9 — Ко-еволюція захисту й атак (динаміка поколінь)",
         "",

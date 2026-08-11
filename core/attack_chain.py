@@ -1,14 +1,14 @@
 """
-Модуль: Attack Chain Orchestrator v2
-Цифрова імунна система — attack_chain.py
+Module: Attack Chain Orchestrator v2
+Digital immune system — attack_chain.py
 
-Запускає атаки послідовно як єдиний APT-сценарій.
-Контекст накопичується між фазами: session_id, voter_uuid,
-extracted tokens передаються від однієї атаки до наступної.
+Runs attacks sequentially as a single APT scenario.
+Context accumulates between phases: session_id, voter_uuid,
+extracted tokens are passed from one attack to the next.
 
-Два визначених ланцюжки:
-  system_apt  — компрометація платформи (розвідка → доступ → фальсифікація → підрахунок)
-  voter_apt   — атака на виборця (фішинг → примус → підміна девайсу → соціальна інженерія)
+Two defined chains:
+  system_apt  — platform compromise (recon → access → tampering → tally)
+  voter_apt   — attack on the voter (phishing → coercion → device swap → social engineering)
 """
 
 import json
@@ -21,7 +21,7 @@ from pathlib import Path
 
 import red_team_agent as rta
 
-# ─── Конфігурація ─────────────────────────────────────────────────────────────
+# ─── Configuration ────────────────────────────────────────────────────────────
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from env_loader import load_config as _load_config
@@ -49,12 +49,12 @@ logging.basicConfig(
 log = logging.getLogger("attack_chain")
 
 
-# ─── Визначення ланцюжків ─────────────────────────────────────────────────────
+# ─── Chain definitions ────────────────────────────────────────────────────────
 
 CHAINS = {
 
     # ══════════════════════════════════════════════════════════════════
-    # APT на платформу: розвідка → доступ → ballot stuffing → tally
+    # APT on the platform: recon → access → ballot stuffing → tally
     # ══════════════════════════════════════════════════════════════════
     "system_apt": {
         "name": "System APT — Election Platform Compromise",
@@ -100,7 +100,7 @@ CHAINS = {
     },
 
     # ══════════════════════════════════════════════════════════════════
-    # APT на виборця: фішинг → примус → JS injection → соціальна інженерія
+    # APT on the voter: phishing → coercion → JS injection → social engineering
     # ══════════════════════════════════════════════════════════════════
     "voter_apt": {
         "name": "Voter APT — Human Targeting Campaign",
@@ -147,12 +147,12 @@ CHAINS = {
 }
 
 
-# ─── Завантаження сценарію ────────────────────────────────────────────────────
+# ─── Loading a scenario ───────────────────────────────────────────────────────
 
 def load_scenario(attack_class: str, prefer_adaptive: bool = False) -> dict:
     """
-    Шукає сценарій по attack_class у scenarios/{vector}/ та /adaptive/.
-    Якщо prefer_adaptive=True — спочатку шукає адаптивний варіант.
+    Looks up a scenario by attack_class in scenarios/{vector}/ and /adaptive/.
+    If prefer_adaptive=True — first looks for the adaptive variant.
     """
     candidates = []
     for f in Path(SCENARIOS_DIR).rglob("*.json"):
@@ -175,11 +175,11 @@ def load_scenario(attack_class: str, prefer_adaptive: bool = False) -> dict:
         if adaptive:
             return sorted(adaptive, reverse=True)[0][1]
 
-    # Повертаємо найсвіжіший (adaptive або ні)
+    # Return the most recent one (adaptive or not)
     return sorted(candidates, reverse=True)[0][2]
 
 
-# ─── Лог ланцюжка ────────────────────────────────────────────────────────────
+# ─── Chain log ────────────────────────────────────────────────────────────────
 
 def log_chain_event(event_type: str, details: dict, severity: str = "INFO"):
     entry = {
@@ -193,7 +193,7 @@ def log_chain_event(event_type: str, details: dict, severity: str = "INFO"):
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
-# ─── Запуск ланцюжка ──────────────────────────────────────────────────────────
+# ─── Running a chain ──────────────────────────────────────────────────────────
 
 def run_chain(chain_name: str, prefer_adaptive: bool = True) -> dict:
     if chain_name not in CHAINS:
@@ -218,7 +218,7 @@ def run_chain(chain_name: str, prefer_adaptive: bool = True) -> dict:
         "prefer_adaptive": prefer_adaptive,
     }, severity="CRITICAL")
 
-    # Накопичений контекст — передається між фазами
+    # Accumulated context — passed between phases
     shared_context = {
         "base_url": HELIOS_BASE_URL,
         "election_uuid": ELECTION_UUID,
@@ -257,17 +257,17 @@ def run_chain(chain_name: str, prefer_adaptive: bool = True) -> dict:
             is_adaptive = bool(scenario.get("adaptation_mode"))
             print(f"  {'[адаптив]' if is_adaptive else '[оригінал]'} {scenario.get('name')}")
 
-            # Виконуємо через red_team_agent з накопиченим контекстом
+            # Execute via red_team_agent with the accumulated context
             report = rta.execute_scenario(scenario, base_url=HELIOS_BASE_URL)
 
-            # Беремо витягнутий контекст з репорту і зберігаємо в shared
+            # Take the extracted context from the report and store it in shared
             end_ctx = report.get("context_at_end", {})
             passed = []
             for key in provides:
                 if key in end_ctx:
                     shared_context[key] = end_ctx[key]
                     passed.append(key)
-            # Також автоматично передаємо session_id і voter_uuid якщо є
+            # Also auto-pass session_id and voter_uuid if present
             for auto_key in ("session_id", "voter_uuid", "csrf_token"):
                 if auto_key in end_ctx and auto_key not in shared_context:
                     shared_context[auto_key] = end_ctx[auto_key]
@@ -318,7 +318,7 @@ def run_chain(chain_name: str, prefer_adaptive: bool = True) -> dict:
 
         time.sleep(0.5)
 
-    # ─── Підсумок ланцюжка ────────────────────────────────────────────────────
+    # ─── Chain summary ──────────────────────────────────────────────────────────
 
     VERDICT_WEIGHT = {
         "EXECUTED": 2, "PARTIAL": 1, "BLOCKED": 0,
@@ -345,7 +345,7 @@ def run_chain(chain_name: str, prefer_adaptive: bool = True) -> dict:
         "verdict_counts":    verdict_counts,
         "chain_score":       round(chain_score, 1),
         "chain_compromised": chain_compromised,
-        "accumulated_ioc":   list(dict.fromkeys(accumulated_ioc)),  # унікальні, зберігаючи порядок
+        "accumulated_ioc":   list(dict.fromkeys(accumulated_ioc)),  # unique, preserving order
         "context_at_end":    {k: v for k, v in shared_context.items()
                               if k not in ("base_url",) and isinstance(v, str)},
     }

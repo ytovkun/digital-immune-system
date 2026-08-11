@@ -1,10 +1,10 @@
 """
-Спільний хелпер: збереження результату security-тесту у JSON.
-Цифрова імунна система — immune_system/_sec_result.py
+Shared helper: saving a security-test result to JSON.
+Digital immune system — immune_system/_sec_result.py
 
-Кожен security-скрипт (false_positive / held_out / prompt_injection / ai_flood)
-пише СВІЙ вимір сюди → metrics_summary читає їх замість захардкоджених значень.
-Так розділ 3 дисертації збирається з РЕАЛЬНИХ прогонів, а не з вписаних вручну цифр.
+Each security script (false_positive / held_out / prompt_injection / ai_flood)
+writes ITS measurement here → metrics_summary reads them instead of hardcoded values.
+So chapter 3 of the dissertation is assembled from REAL runs, not manually entered numbers.
 """
 
 import json
@@ -22,7 +22,7 @@ SECURITY_DIR = _ROOT / _cfg.get("paths", {}).get("reports_dir", "reports") / "se
 
 def save_security_result(key: str, label: str, value: str, detail: str,
                          passed: bool, source: str):
-    """Зберігає один вимір security-тесту у reports/security/<key>.json."""
+    """Save one security-test measurement to reports/security/<key>.json."""
     SECURITY_DIR.mkdir(parents=True, exist_ok=True)
     path = SECURITY_DIR / f"{key}.json"
     path.write_text(json.dumps({

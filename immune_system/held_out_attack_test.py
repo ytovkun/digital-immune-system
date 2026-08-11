@@ -1,23 +1,23 @@
 """
-Тест held-out атак: чи ловить ШІ атаки, яких НЕ було в каталозі
-Цифрова імунна система — immune_system/held_out_attack_test.py
+Held-out attack test: does the AI catch attacks that were NOT in the catalog
+Digital immune system — immune_system/held_out_attack_test.py
 
-Найсильніший доказ узагальнення GenAI: ШІ блокує атаки, про які йому
-НІХТО не розповідав — ні в сигнатурах FastReflex, ні в 11 класах каталогу,
-ні в системному промпті AIAnalyst. Якщо ШІ їх ловить — він РОЗМІРКОВУЄ про
-намір, а не звіряється зі списком.
+The strongest proof of GenAI generalization: the AI blocks attacks that NO ONE
+told it about — neither in the FastReflex signatures, nor in the 11 catalog
+classes, nor in the AIAnalyst system prompt. If the AI catches them — it REASONS
+about intent, not checks against a list.
 
-Held-out атаки (НЕ входять у каталог із 11 класів і не згадані в промпті ШІ):
+Held-out attacks (NOT in the 11-class catalog and not mentioned in the AI prompt):
   1. Path Traversal       — /helios/.../../../etc/passwd
   2. SQL Injection        — /voters/?q=1' OR '1'='1' --
-  3. Election Deletion    — POST /delete (знищення виборів, не ballot stuffing)
-  4. Ballot Deletion      — DELETE на бюлетень (HTTP verb tampering)
-  5. XSS / Template Inj.  — параметр зі <script>/{{7*7}}
+  3. Election Deletion    — POST /delete (election destruction, not ballot stuffing)
+  4. Ballot Deletion      — DELETE on a ballot (HTTP verb tampering)
+  5. XSS / Template Inj.  — a parameter with <script>/{{7*7}}
 
-FastReflex лише МАРШРУТИЗУЄ їх на ШІ (як аномалії) — БЛОК виносить ШІ.
+FastReflex only ROUTES them to the AI (as anomalies) — the AI issues the BLOCK.
 
-Передумови: Helios :8001, immune_proxy :8000 (з УВІМКНЕНИМ ШІ).
-Запуск:  python immune_system/held_out_attack_test.py
+Prerequisites: Helios :8001, immune_proxy :8000 (with the AI ENABLED).
+Run:  python immune_system/held_out_attack_test.py
 """
 
 import sys
@@ -40,7 +40,7 @@ UUID  = _cfg.get("helios", {}).get("election_uuid", "c88cfaeb-abc0-4440-a165-a77
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0"
 
 
-# Кожна проба: (назва, опис-чому-новизна, функція-запиту)
+# Each probe: (name, why-it-is-novel description, request function)
 def probe_path_traversal():
     return requests.get(
         f"{PROXY}/helios/elections/{UUID}/../../../../etc/passwd",
@@ -117,7 +117,7 @@ def main():
             print(f"    ERR: {type(e).__name__}")
             results.append((name, False, "ERR"))
 
-    # ─── Підсумок ──────────────────────────────────────────────────────────────
+    # ─── Summary ────────────────────────────────────────────────────────────────
     caught = sum(1 for _, b, _ in results if b)
     total = len(results)
     print("\n" + "=" * 76)

@@ -1,16 +1,16 @@
 """
-Re-detection через імунну пам'ять (розділ 5.1).
-Цифрова імунна система — immune_system/redetection_test.py
+Re-detection through immune memory (section 5.1).
+Digital immune system — immune_system/redetection_test.py
 
-Демонструє adaptive→innate immunity: НОВИЙ підозрілий патерн ЦІС спершу аналізує
-ШІ (L2, ~секунди) і синтезує сигнатуру; ПОВТОРНА поява того самого патерну ловиться
-миттєво рефлексом L1 (вивчена сигнатура / кеш-антитіло, ~0мс). Міряє прискорення
-повторного виявлення — ефект «імунної пам'яті».
+Demonstrates adaptive→innate immunity: a NEW suspicious pattern is first analyzed
+by the AI (L2, ~seconds), which synthesizes a signature; a REPEAT appearance of the
+same pattern is caught instantly by the L1 reflex (learned signature / cache
+antibody, ~0ms). Measures the speedup of re-detection — the "immune memory" effect.
 
-Кожен патерн надсилається кілька разів; фіксуємо латентність і рівень (L1/L2) на
-кожній зустрічі. Передумови: Helios :8001, immune_proxy :8000 (з УВІМКНЕНИМ ШІ).
-Запуск:  python immune_system/redetection_test.py
-Вихід:   таблиця + reports/redetection/redetection_{ts}.json
+Each pattern is sent several times; we record latency and tier (L1/L2) at each
+encounter. Prerequisites: Helios :8001, immune_proxy :8000 (with the AI ENABLED).
+Run:  python immune_system/redetection_test.py
+Out:  table + reports/redetection/redetection_{ts}.json
 """
 
 import sys
@@ -31,12 +31,10 @@ UUID = _cfg.get("helios", {}).get("election_uuid", "c88cfaeb-abc0-4440-a165-a77c
 BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
 
-REPEATS = 3   # скільки разів надсилати кожен патерн (1-ша = новизна, далі — пам'ять)
+REPEATS = 3   # how many times to send each pattern (1st = novelty, then = memory)
 
-# Патерни-аномалії, що маршрутизуються на ШІ (не hard-block L1), аби ШІ синтезував
-# сигнатуру, а L1 навчився й ловив повторні миттєво.
-# Патерни-аномалії, що маршрутизуються на ШІ (НЕ hard-block L1): ШІ блокує й повертає
-# signature-токен, L1 його вчить → повторні ловляться миттєво (re-detection пам'ять).
+# Anomaly patterns routed to the AI (NOT a hard-block L1): the AI blocks and returns
+# a signature token, L1 learns it → repeats are caught instantly (re-detection memory).
 PATTERNS = [
     (f"/helios/elections/{UUID}/view?c=<div onmouseover=alert(1)>", "XSS onmouseover"),
     (f"/helios/elections/{UUID}/view?c=<iframe src=//evil.example>", "iframe injection"),
@@ -87,7 +85,7 @@ def main():
     for path, why in PATTERNS:
         enc = []
         for i in range(REPEATS):
-            # той самий IP — щоб перевіряти саме ПАМ'ЯТЬ (сигнатура/кеш), не per-IP
+            # the same IP — to test the MEMORY (signature/cache), not per-IP
             r = _send(path, "203.0.113.200")
             if r is None:
                 continue
@@ -99,7 +97,7 @@ def main():
         results.append({"pattern": why, "path": path, "encounters": enc})
     learned_after = _stats().get("fast_reflex", {}).get("learned_signatures", 0)
 
-    # ─── Зведення: 1-ша зустріч (новизна) vs повторні (пам'ять) ────────────────
+    # ─── Summary: 1st encounter (novelty) vs repeats (memory) ──────────────────
     first = [r["encounters"][0]["latency_ms"] for r in results if r["encounters"]]
     repeat = [e["latency_ms"] for r in results for e in r["encounters"][1:]]
     avg_first = sum(first) / len(first) if first else 0

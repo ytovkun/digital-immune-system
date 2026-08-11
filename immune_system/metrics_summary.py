@@ -1,22 +1,22 @@
 """
-Зведена таблиця метрик ЦІС для розділу результатів дисертації
-Цифрова імунна система — immune_system/metrics_summary.py
+Summary table of DIS metrics for the results chapter of the dissertation
+Digital immune system — immune_system/metrics_summary.py
 
-Агрегує РЕАЛЬНІ виміри з логів + результати тестів безпеки + порівняння з
-класичним SIEM. Генерує таблиці для розділу 3 (результати).
+Aggregates REAL measurements from logs + security test results + comparison with
+a classic SIEM. Generates tables for chapter 3 (results).
 
-Джерела РЕАЛЬНИХ вимірів:
-  logs/immune_blocks.jsonl              — час реагування за рівнями
-  reports/defense_effectiveness_*.json  — покриття (нейтралізовано/пропущено)
+Sources of REAL measurements:
+  logs/immune_blocks.jsonl              — response time by tier
+  reports/defense_effectiveness_*.json  — coverage (neutralized/leaked)
 
-Результати тестів безпеки (відтворювані відповідними скриптами):
+Security test results (reproducible by the corresponding scripts):
   false_positive_test.py    → FPR
-  held_out_attack_test.py   → узагальнення (нові атаки)
-  prompt_injection_test.py  → стійкість до інʼєкцій
-  ai_flood_test.py          → стійкість до DoS на ШІ
+  held_out_attack_test.py   → generalization (new attacks)
+  prompt_injection_test.py  → injection resistance
+  ai_flood_test.py          → resistance to DoS on the AI
 
-Запуск:  python immune_system/metrics_summary.py
-Вихід:   таблиці + reports/metrics_summary_{ts}.json
+Run:  python immune_system/metrics_summary.py
+Out:  tables + reports/metrics_summary_{ts}.json
 """
 
 import sys
@@ -39,7 +39,7 @@ LOGS_DIR    = ROOT / _cfg.get("paths", {}).get("logs_dir", "logs")
 BLOCKS_LOG  = LOGS_DIR / "immune_blocks.jsonl"
 
 
-# ─── 1. Час реагування за рівнями (з реальних логів) ──────────────────────────
+# ─── 1. Response time by tier (from real logs) ────────────────────────────────
 
 def detection_time_stats() -> dict:
     if not BLOCKS_LOG.exists():
@@ -56,7 +56,7 @@ def detection_time_stats() -> dict:
         if d.get("tier") == "FastReflex":
             by_tier["L1 FastReflex"].append(lat)
         elif d.get("tier") == "AIAnalyst":
-            # розділяємо реальний виклик ШІ (повільний) від кешу/rate-cap (миттєвий)
+            # separate a real AI call (slow) from cache/rate-cap (instant)
             if d.get("from_cache") or lat < 100:
                 by_tier["L2 кеш/rate-cap"].append(lat)
             else:
@@ -73,14 +73,14 @@ def detection_time_stats() -> dict:
     return stats
 
 
-# ─── 2. Покриття (з defense_effectiveness) ────────────────────────────────────
+# ─── 2. Coverage (from defense_effectiveness) ─────────────────────────────────
 
 def coverage_stats() -> dict:
     files = sorted(glob.glob(str(REPORTS_DIR / "**" / "defense_effectiveness_*.json"), recursive=True))
     if not files:
         return {}
-    # Покриття = «із захистом»: якщо є defended-звіт (campaign), беремо ЙОГО явно
-    # (а не останній за сортуванням, щоб не показати випадково baseline=0% блоків).
+    # Coverage = "with defense": if there is a defended report (campaign), take IT
+    # explicitly (not the last by sorting, so we do not accidentally show baseline=0% blocks).
     defended = [f for f in files if "defended" in os.path.basename(f)]
     chosen = sorted(defended)[-1] if defended else files[-1]
     d = json.load(open(chosen, encoding="utf-8"))
@@ -96,19 +96,19 @@ def coverage_stats() -> dict:
     }
 
 
-# ─── 3. Результати тестів безпеки (відтворювані скриптами) ────────────────────
-# Значення — підсумки прогонів відповідних тестових скриптів.
+# ─── 3. Security test results (reproducible by scripts) ───────────────────────
+# Values are summaries of runs of the corresponding test scripts.
 
-# Security-виміри читаються з РЕАЛЬНИХ прогонів (reports/security/<key>.json),
-# які пишуть відповідні скрипти. Якщо тест не прогнано — показуємо «не виконано»
-# (а не вписані вручну цифри). Порядок і людські назви — тут; значення — з JSON.
+# Security measurements are read from REAL runs (reports/security/<key>.json)
+# written by the corresponding scripts. If a test was not run — we show "not run"
+# (not manually entered numbers). Order and human labels here; values from JSON.
 SECURITY_SPECS = [
     ("fpr",              "False-positive rate (FPR)",        "false_positive_test.py"),
     ("generalization",   "Узагальнення (нові атаки)",        "held_out_attack_test.py"),
     ("prompt_injection", "Стійкість до prompt injection",    "prompt_injection_test.py"),
     ("ai_flood",         "Стійкість до DoS на ШІ",           "ai_flood_test.py"),
 ]
-# Архітектурна властивість (не runtime-вимір) — верифікується unit-тестами й ai_flood.
+# Architectural property (not a runtime measurement) — verified by unit tests and ai_flood.
 STATIC_SECURITY = {
     "Fail-secure при відмові ШІ": {
         "value": "fail-closed", "detail": "критичні операції блокуються без ШІ",
@@ -118,7 +118,7 @@ STATIC_SECURITY = {
 
 
 def security_tests() -> dict:
-    """Читає виміри security-тестів з reports/security/. Відсутні → 'не виконано'."""
+    """Read security-test measurements from reports/security/. Missing → 'not run'."""
     sec_dir = REPORTS_DIR / "security"
     out = {}
     for key, label, source in SECURITY_SPECS:
@@ -138,11 +138,11 @@ def security_tests() -> dict:
     return out
 
 
-# ─── 4. Порівняння з класичним SIEM ───────────────────────────────────────────
-# Значення SIEM — типові з літератури (Splunk/QRadar/ArcSight), НЕ виміряні тут.
+# ─── 4. Comparison with a classic SIEM ────────────────────────────────────────
+# SIEM values are typical from the literature (Splunk/QRadar/ArcSight), NOT measured here.
 
 COMPARISON = [
-    # (характеристика, класичний SIEM, ЦІС цього дослідження)
+    # (characteristic, classic SIEM, DIS of this study)
     ("Затримка виявлення",        "хвилини–години (batch-кореляція)", "L1: ~0.05ms, L2 ШІ: ~3с, кеш: 0ms"),
     ("Реагування",                "ручне (SOC-аналітик)",             "автоматичне inline (403) у реальному часі"),
     ("MTTR (до реакції)",         "хвилини–години",                   "мілісекунди (без людини)"),
@@ -154,8 +154,8 @@ COMPARISON = [
     ("Основа рішення",            "кореляційні правила",              "GenAI-міркування про намір"),
 ]
 
-# Джерела типових показників SIEM (для коректного цитування в дисертації).
-# Значення SIEM узяті з літератури, а не виміряні в цій роботі.
+# Sources of typical SIEM figures (for correct citation in the dissertation).
+# SIEM values are taken from the literature, not measured in this work.
 SIEM_SOURCES = [
     "Ponemon Institute. 'The Cost of Malware Containment' (2015) — до ~25–75% "
     "сповіщень хибнопозитивні; alert fatigue у SOC.",
@@ -169,13 +169,13 @@ SIEM_SOURCES = [
 ]
 
 
-# ─── Вивід ────────────────────────────────────────────────────────────────────
+# ─── Output ───────────────────────────────────────────────────────────────────
 
 def build_tables(dt: dict, cov: dict, sec: dict) -> str:
-    """Будує всі 4 таблиці як єдиний текст (для друку і збереження у .txt)."""
+    """Build all 4 tables as a single text (for printing and saving to .txt)."""
     L = ["=" * 88, "  ЗВЕДЕНІ МЕТРИКИ ЦІС — розділ результатів дисертації", "=" * 88]
 
-    # Таблиця 3.A — час реагування
+    # Table 3.A — response time
     L += ["", "  ТАБЛИЦЯ 3.A — Час реагування за рівнями захисту (реальні виміри)",
           f"  {'Рівень':<22} {'Блоків':>7} {'Сер.,ms':>10} {'Мін,ms':>9} {'Макс,ms':>9}",
           f"  {'─'*60}"]
@@ -184,7 +184,7 @@ def build_tables(dt: dict, cov: dict, sec: dict) -> str:
     if not dt:
         L.append("  (немає даних — прожени атаки через проксі, щоб наповнити immune_blocks.jsonl)")
 
-    # Таблиця 3.B — покриття
+    # Table 3.B — coverage
     if cov:
         t = cov["total_attacks"]
         L += ["", "  ТАБЛИЦЯ 3.B — Покриття захисту (ефективність)",
@@ -196,13 +196,13 @@ def build_tables(dt: dict, cov: dict, sec: dict) -> str:
         if cb + cr:
             L.append(f"  Небезпечних операцій заблоковано:  {cb}/{cb+cr} ({cb/(cb+cr)*100:.0f}%)")
 
-    # Таблиця 3.C — безпека самої ЦІС
+    # Table 3.C — security of the DIS itself
     L += ["", "  ТАБЛИЦЯ 3.C — Метрики безпеки та стійкості ЦІС",
           f"  {'Метрика':<34} {'Значення':<26} Деталі", f"  {'─'*84}"]
     for name, m in sec.items():
         L.append(f"  {name:<34} {str(m['value']):<26} {m['detail']}")
 
-    # Таблиця 3.D — vs SIEM
+    # Table 3.D — vs SIEM
     L += ["", "  ТАБЛИЦЯ 3.D — ЦІС vs класичний SIEM",
           f"  {'Характеристика':<28} {'Класичний SIEM':<34} ЦІС (це дослідження)",
           f"  {'─'*86}"]
@@ -222,7 +222,7 @@ def main():
     text = build_tables(dt, cov, sec)
     print(text)
 
-    # ─── Збереження ────────────────────────────────────────────────────────────
+    # ─── Saving ─────────────────────────────────────────────────────────────────
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     out = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -240,7 +240,7 @@ def main():
     out_path.write_text(json.dumps(out, ensure_ascii=False, indent=2))
     print(f"  [+] Збережено: {out_path}")
 
-    # таблиці для дисертації (.txt)
+    # dissertation tables (.txt)
     txt_path = metrics_dir / f"metrics_table_{ts}.txt"
     txt_path.write_text(text, encoding="utf-8")
     print(f"  [+] Таблиця для дисертації: {txt_path}")

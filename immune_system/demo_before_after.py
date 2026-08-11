@@ -1,17 +1,17 @@
 """
-Демо: ДО / ПІСЛЯ цифрової імунної системи
-Цифрова імунна система — immune_system/demo_before_after.py
+Demo: BEFORE / AFTER the digital immune system
+Digital immune system — immune_system/demo_before_after.py
 
-Прогоняє однакові атаки двічі:
-  1. Напряму в Helios (:8001)        — БЕЗ захисту → атаки проходять
-  2. Через ImmuneProxy (:8000)        — З захистом → атаки блокуються (403)
+Runs the same attacks twice:
+  1. Directly to Helios (:8001)       — WITHOUT defense → attacks pass
+  2. Through ImmuneProxy (:8000)      — WITH defense → attacks are blocked (403)
 
-Друкує порівняльну таблицю — головний результат для захисту дисертації.
+Prints a comparison table — the main result for the dissertation defense.
 
-Передумови:
-  - Helios працює на :8001
-  - immune_proxy.py працює на :8000
-Запуск:  python immune_system/demo_before_after.py
+Prerequisites:
+  - Helios running on :8001
+  - immune_proxy.py running on :8000
+Run:  python immune_system/demo_before_after.py
 """
 
 import re
@@ -39,10 +39,10 @@ def _csrf(session, base, path):
     return m.group(1) if m else ""
 
 
-# ─── Атаки-проби ──────────────────────────────────────────────────────────────
+# ─── Attack probes ────────────────────────────────────────────────────────────
 
 def probe_devlogin(base):
-    """Authentication Bypass через DevLogin (без пароля)."""
+    """Authentication Bypass via DevLogin (no password)."""
     s = requests.Session()
     csrf = _csrf(s, base, "/auth/devlogin/login")
     r = s.post(f"{base}/auth/devlogin/login",
@@ -56,7 +56,7 @@ def probe_devlogin(base):
 
 
 def probe_race(base):
-    """Race condition: 5 одночасних POST /cast."""
+    """Race condition: 5 simultaneous POST /cast."""
     results = []
     barrier = threading.Barrier(5)
     def worker():
@@ -80,7 +80,7 @@ def probe_race(base):
 
 
 def probe_login_flood(base):
-    """Brute-force / suppression: 12 швидких логінів."""
+    """Brute-force / suppression: 12 rapid logins."""
     codes = []
     for _ in range(12):
         try:
@@ -98,7 +98,7 @@ def probe_login_flood(base):
 
 
 def probe_trustee_csrf(base):
-    """CSRF на trustee upload із зовнішнього Referer."""
+    """CSRF on trustee upload from an external Referer."""
     s = requests.Session()
     try:
         r = s.post(f"{base}/helios/elections/{UUID}/trustees/fake-uuid/upload-decryption",
@@ -120,7 +120,7 @@ PROBES = [
 ]
 
 
-# ─── Прогін ───────────────────────────────────────────────────────────────────
+# ─── Run ──────────────────────────────────────────────────────────────────────
 
 def run_against(base, label):
     print(f"\n  ▶ Прогін {label} ({base})")
@@ -142,7 +142,7 @@ def main():
     print("  Однакові атаки → напряму в Helios vs через ImmuneProxy")
     print("=" * 74)
 
-    # перевірка доступності
+    # availability check
     for base, who in [(HELIOS_DIRECT, "Helios :8001"), (PROXY, "ImmuneProxy :8000")]:
         try:
             requests.get(base, timeout=3)
@@ -154,7 +154,7 @@ def main():
     before = run_against(HELIOS_DIRECT, "БЕЗ ЗАХИСТУ")
     after  = run_against(PROXY, "З ЦІС (ImmuneProxy)")
 
-    # ─── Порівняльна таблиця ──────────────────────────────────────────────────
+    # ─── Comparison table ───────────────────────────────────────────────────────
     print("\n" + "=" * 74)
     print("  📊 ПОРІВНЯЛЬНА ТАБЛИЦЯ — головний результат")
     print("=" * 74)
@@ -174,7 +174,7 @@ def main():
     print("=" * 74)
     print("\n  Метрики ЦІС: curl http://localhost:8000/__immune__/stats")
 
-    # ─── Таблиця для дисертації (.txt) ─────────────────────────────────────────
+    # ─── Dissertation table (.txt) ──────────────────────────────────────────────
     tbl = [
         "ТАБЛИЦЯ 3.7 — Демонстрація ДО / ПІСЛЯ ЦІС (однакові атаки)",
         "",

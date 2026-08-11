@@ -1,16 +1,16 @@
 """
-Тест rate-cap: захист ШІ від cache-busting флуду
-Цифрова імунна система — immune_system/ai_flood_test.py
+Rate-cap test: protecting the AI from a cache-busting flood
+Digital immune system — immune_system/ai_flood_test.py
 
-Атака на саму ЦІС: зловмисник шле УНІКАЛЬНІ патерни (кожен мимо кешу), щоб
-форсувати дорогий ~3с виклик Claude на кожен запит → DoS на захист.
+An attack on the DIS itself: the attacker sends UNIQUE patterns (each a cache
+miss) to force an expensive ~3s Claude call per request → a DoS on the defense.
 
-Очікування: після вичерпання бюджету ШІ-викликів на IP проксі переходить
-у fail-closed (блокує критичні без виклику Claude) — захист не тоне у дорогих
-викликах, критичні операції лишаються заблокованими.
+Expectation: once the AI-call budget per IP is exhausted, the proxy switches to
+fail-closed (blocks critical ops without calling Claude) — the defense does not
+drown in expensive calls, and critical operations stay blocked.
 
-Передумови: Helios :8001, immune_proxy :8000 (з УВІМКНЕНИМ ШІ).
-Запуск:  python immune_system/ai_flood_test.py
+Prerequisites: Helios :8001, immune_proxy :8000 (with the AI ENABLED).
+Run:  python immune_system/ai_flood_test.py
 """
 
 import sys
@@ -30,7 +30,7 @@ _cfg = load_config()
 PROXY = "http://localhost:8000"
 UUID  = _cfg.get("helios", {}).get("election_uuid", "c88cfaeb-abc0-4440-a165-a77cab2951f2")
 
-FLOOD_COUNT = 20   # унікальних критичних запитів (більше за бюджет 12)
+FLOOD_COUNT = 20   # unique critical requests (more than the budget of 12)
 
 
 def main():
@@ -54,8 +54,8 @@ def main():
     s = requests.Session()
     s.headers.update({"User-Agent": "python-requests/2.31"})
     for i in range(FLOOD_COUNT):
-        # cache-busting через УНІКАЛЬНИЙ query-параметр (він входить у підпис кешу,
-        # на відміну від тіла) — кожен запит мимо кешу → форсує виклик Claude
+        # cache-busting via a UNIQUE query parameter (it is part of the cache
+        # signature, unlike the body) — each request a cache miss → forces a Claude call
         t0 = time.perf_counter()
         try:
             r = s.post(f"{PROXY}/helios/elections/{UUID}/cast?n={i}&t={int(time.time()*1000)}",
