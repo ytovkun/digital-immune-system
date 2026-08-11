@@ -1,22 +1,22 @@
 """
-Модуль: ImmuneProxy — inline reverse-proxy цифрової імунної системи
-Цифрова імунна система — immune_system/immune_proxy.py
+Module: ImmuneProxy — inline reverse proxy of the digital immune system
+Digital immune system — immune_system/immune_proxy.py
 
-Стоїть на порту 8000 ПЕРЕД Helios (порт 8001). Кожен запит проходить через
-дворівневий захист у реальному часі:
+Sits on port 8000 IN FRONT OF Helios (port 8001). Every request goes through
+two-layer defense in real time:
 
-  Запит → :8000 ImmuneProxy
+  Request → :8000 ImmuneProxy
             ↓
-   Уровень 1: FastReflex (~1ms)  → ALLOW / BLOCK / INSPECT
+   Layer 1: FastReflex (~1ms)  → ALLOW / BLOCK / INSPECT
             ↓ (INSPECT)
-   Уровень 2: AIAnalyst (Claude) → ALLOW / BLOCK
+   Layer 2: AIAnalyst (Claude) → ALLOW / BLOCK
             ↓ (ALLOW)
-   форвард → :8001 Helios → відповідь назад
+   forward → :8001 Helios → response back
             (BLOCK)
-   → 403 Forbidden, запит НЕ доходить до Helios
+   → 403 Forbidden, the request does NOT reach Helios
 
-Запуск:  python immune_system/immune_proxy.py
-Метрики: GET http://localhost:8000/__immune__/stats
+Run:      python immune_system/immune_proxy.py
+Metrics:  GET http://localhost:8000/__immune__/stats
 """
 
 import sys
@@ -31,7 +31,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlsplit, unquote
 from pathlib import Path
 
-# Автозавантаження .env (ключ ANTHROPIC_API_KEY) до ініціалізації AIAnalyst
+# Auto-load .env (ANTHROPIC_API_KEY) before initializing AIAnalyst
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from env_loader import load_env
 load_env()
@@ -44,7 +44,7 @@ from ai_analyst import AIAnalyst, DEFAULT_MODEL
 from threat_patterns import hard_payload_present, classify_hard_payload
 
 
-# ─── Конфігурація ─────────────────────────────────────────────────────────────
+# ─── Configuration ────────────────────────────────────────────────────────────
 
 from env_loader import load_config
 
@@ -53,8 +53,8 @@ PROJECT_ROOT  = Path(_cfg.get("_root", Path(__file__).resolve().parent.parent))
 LOGS_DIR      = PROJECT_ROOT / _cfg.get("paths", {}).get("logs_dir", "logs")
 CLAUDE_MODEL  = _cfg.get("claude", {}).get("model", DEFAULT_MODEL)
 CLAUDE_EFFORT = _cfg.get("claude", {}).get("effort", "low")   # глибина L2-міркування
-# окремий ліміт для ШІ-судді (НЕ плутати з claude.max_tokens=7000 для генерації):
-# з adaptive thinking токени йдуть і на міркування — 512 обрізало б JSON-вердикт.
+# a separate limit for the AI judge (NOT to be confused with claude.max_tokens=7000 for
+# generation): with adaptive thinking, tokens also go to reasoning — 512 would truncate the JSON verdict.
 JUDGE_MAX_TOKENS = _cfg.get("claude", {}).get("judge_max_tokens", 2048)
 
 _proxy_cfg     = _cfg.get("immune_proxy", {})
@@ -62,15 +62,15 @@ LISTEN_HOST    = _proxy_cfg.get("listen_host", "127.0.0.1")
 PROXY_PORT     = _proxy_cfg.get("listen_port", 8000)
 HELIOS_BACKEND = _proxy_cfg.get("helios_backend", "http://localhost:8001")
 MAX_BODY_BYTES = _proxy_cfg.get("max_body_bytes", 5 * 1024 * 1024)   # 5 МБ
-# Таймаут форварду до Helios. Було 30с: при threads=8 вісім повільних відповідей
-# бекенду вичерпали б пул воркерів (thread-starvation DoS). 10с — розумний стель
-# для e-voting (view/cast швидкі); повільніше = або перевантажений Helios, або атака.
+# Forward timeout to Helios. Was 30s: with threads=8 eight slow backend responses
+# would exhaust the worker pool (thread-starvation DoS). 10s is a reasonable ceiling
+# for e-voting (view/cast are fast); slower = either an overloaded Helios or an attack.
 FORWARD_TIMEOUT_SEC = _proxy_cfg.get("forward_timeout_sec", 10)
 AI_BODY_PREVIEW = 2000          # скільки байтів тіла подавати ШІ
 BLOCKS_LOG     = LOGS_DIR / "immune_blocks.jsonl"
 
-# Інʼєкція безпечних HTTP-заголовків у КОЖНУ відповідь (захист браузера виборця:
-# XSS, clickjacking, MITB/CDN-compromise, sniffing). Стандартний контроль OWASP.
+# Inject secure HTTP headers into EVERY response (voter browser protection:
+# XSS, clickjacking, MITB/CDN-compromise, sniffing). Standard OWASP control.
 SECURITY_HEADERS_ENABLED = _proxy_cfg.get("security_headers_enabled", True)
 SECURITY_HEADERS = _proxy_cfg.get("security_headers") or {
     "X-Content-Type-Options": "nosniff",
@@ -78,11 +78,11 @@ SECURITY_HEADERS = _proxy_cfg.get("security_headers") or {
     "Referrer-Policy": "no-referrer",
     "Permissions-Policy": "geolocation=(), microphone=(), camera=()",
     "Cross-Origin-Opener-Policy": "same-origin",
-    # HSTS дієвий лише поверх TLS (браузер ігнорує по HTTP) — додаємо на майбутнє
+    # HSTS is effective only over TLS (the browser ignores it over HTTP) — added for the future
     "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
-    # script-src 'self' блокує ЗОВНІШНІ скрипти (CDN-compromise/MITB-вектор);
-    # frame-ancestors 'none' — анти-clickjacking; object-src 'none' — без плагінів.
-    # 'unsafe-inline'/'eval' лишаємо, бо криптографія Helios — інлайн-JS у браузері.
+    # script-src 'self' blocks EXTERNAL scripts (CDN-compromise/MITB vector);
+    # frame-ancestors 'none' — anti-clickjacking; object-src 'none' — no plugins.
+    # 'unsafe-inline'/'eval' are kept, because Helios cryptography is inline JS in the browser.
     "Content-Security-Policy": (
         "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
         "style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; "
@@ -90,76 +90,76 @@ SECURITY_HEADERS = _proxy_cfg.get("security_headers") or {
     ),
 }
 
-# Огрублення timestamp на ballot board: публічний cast_at розкриває точний час
-# подачі → timing-деанонімізація. Округлюємо до години у відповідях /ballots/.
+# Timestamp coarsening on the ballot board: a public cast_at reveals the exact
+# cast time → timing-deanonymization. We round to the hour in /ballots/ responses.
 COARSEN_BALLOT_TS = _proxy_cfg.get("coarsen_ballot_timestamps", True)
 
-# Інспекція ВІДПОВІДЕЙ (анти-ексфільтрація PII). Захист даних голосування — це не
-# лише «не пустити запис», а й «не дати масово ВИТЕКТИ» списку виборців/бюлетенів.
-# Аномально великий дамп на /voters/ чи /ballots/ — ознака harvest/ексфільтрації.
-#   soft → лише позначка (лог+метрика+заголовок), віддаємо відповідь (FP-safe);
-#   hard → блок 403 (за замовчуванням ВИМКНЕНО: 0, щоб не зрізати легіт-обсяги).
+# RESPONSE inspection (anti-exfiltration of PII). Protecting voting data is not
+# only "not letting a write in" but also "not letting a mass LEAK" of the voters/ballots list.
+# An anomalously large dump on /voters/ or /ballots/ is a sign of harvest/exfiltration.
+#   soft → only a flag (log+metric+header), return the response (FP-safe);
+#   hard → 403 block (DISABLED by default: 0, so legit volumes are not cut off).
 EXFIL_INSPECT_PATHS = ("/voters/", "/ballots/")
 EXFIL_SOFT_BYTES = _proxy_cfg.get("exfil_soft_bytes", 256 * 1024)   # 256 КБ → підозра
 EXFIL_HARD_BYTES = _proxy_cfg.get("exfil_hard_bytes", 0)            # 0 = блок вимкнено
 
-# Verbose-блоки: чи повертати атакувальнику attack_class + reason у тілі 403.
-# DEMO/лабораторія (True) — зручно для adaptive_generator та звітів; ПРОД (False) —
-# не підказувати зловмиснику, ЩО саме спрацювало (мінімальна 403 без деталей детекції).
+# Verbose blocks: whether to return attack_class + reason in the 403 body to the attacker.
+# DEMO/lab (True) — convenient for adaptive_generator and reports; PROD (False) —
+# do not hint to the attacker WHAT triggered (a minimal 403 without detection details).
 VERBOSE_BLOCKS = _proxy_cfg.get("verbose_blocks", True)
 
-# Скільки байтів ТІЛА сканувати детермінованим бэкстопом (payload не лише на початку).
-# Окремо від AI_BODY_PREVIEW (превʼю для ШІ лишається 2КБ) — бэкстоп дивиться глибше.
+# How many BODY bytes the deterministic backstop scans (payload not only at the start).
+# Separate from AI_BODY_PREVIEW (the AI preview stays 2KB) — the backstop looks deeper.
 BACKSTOP_BODY_BYTES = _proxy_cfg.get("backstop_body_bytes", 64 * 1024)   # 64 КБ
-# Опц. токен для /__immune__/stats (порожній = без авторизації; проксі слухає
-# 127.0.0.1, тож не назовні — але в проді задай токен у config.json).
+# Optional token for /__immune__/stats (empty = no auth; the proxy listens on
+# 127.0.0.1, so not exposed — but in prod set a token in config.json).
 STATS_TOKEN = _proxy_cfg.get("stats_token", "")
 _TS_RE = re.compile(r'(\d{4}-\d{2}-\d{2}T\d{2}):\d{2}:\d{2}(?:\.\d+)?')
 
 LOGS_DIR.mkdir(exist_ok=True)
 
-# Заголовки, які не можна форвардити (hop-by-hop)
+# Headers that must not be forwarded (hop-by-hop)
 HOP_BY_HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
               "te", "trailers", "transfer-encoding", "upgrade", "host", "content-length"}
 
 
-# ─── Компоненти ───────────────────────────────────────────────────────────────
+# ─── Components ───────────────────────────────────────────────────────────────
 
 app = Flask(__name__)
-# Захист від memory-DoS: відхиляємо тіла понад межу (Flask поверне 413)
+# Memory-DoS protection: reject bodies over the limit (Flask returns 413)
 app.config["MAX_CONTENT_LENGTH"] = MAX_BODY_BYTES
 reflex = FastReflex()
 analyst = AIAnalyst(model=CLAUDE_MODEL, memory_db=LOGS_DIR / "ai_memory.db",
                     effort=CLAUDE_EFFORT, max_tokens=JUDGE_MAX_TOKENS)
 
-# Вікно ПІДОЗРІЛИХ запитів від IP (вторинний сигнал для ШІ). УВАГА: поповнюється
-# лише на шляху INSPECT (_recent_ip_count зветься тільки перед L2), тож це «скільки
-# разів цей IP дійшов до ШІ-аналізу за вікно», а НЕ повний лічильник усіх запитів —
-# справжній rate-limit робить FastReflex (L1). Для ШІ це підказка «недавня підозріла
-# активність», не точний обсяг трафіку.
+# Window of SUSPICIOUS requests from an IP (a secondary signal for the AI). NOTE: it is
+# populated only on the INSPECT path (_recent_ip_count is called only before L2), so it is
+# "how many times this IP reached AI analysis in the window", NOT a full counter of all
+# requests — the real rate-limit is done by FastReflex (L1). For the AI it is a hint of
+# "recent suspicious activity", not the exact traffic volume.
 _ip_window = defaultdict(deque)
 MAX_TRACKED_IPS = 10000   # межа для захисту від memory-DoS (евікція найстаріших)
 
-# Поведінкова ТРАЄКТОРІЯ актора (session|IP): послідовність і темп останніх запитів.
-# Дає ШІ контекст для виявлення БАГАТОКРОКОВИХ атак / APT-розвідки (recon→login→cast
-# за секунди), які поштучно виглядають невинно. Серверний сигнал (виміряний проксі).
+# Behavioral TRAJECTORY of the actor (session|IP): the sequence and tempo of recent requests.
+# Gives the AI context to detect MULTI-STEP attacks / APT recon (recon→login→cast in
+# seconds) that look innocent individually. A server signal (measured by the proxy).
 _actor_history = defaultdict(deque)   # actor → deque[(ts, method, label)]
 MAX_TRAJ_ENTRIES = 12                  # скільки останніх кроків тримати на актора
 TRAJ_WINDOW_SEC = 60.0                 # горизонт траєкторії
-# Детермінований темп-фільтр (нелюдський темп = бот/APT). Єдине джерело порогу —
-# і прод-шлях, і тести користуються цими константами (без дублювання «магічних 4/2с»).
+# Deterministic tempo filter (non-human tempo = bot/APT). A single source of the threshold —
+# both the prod path and tests use these constants (without duplicating "magic 4/2s").
 NONHUMAN_TEMPO_WINDOW_SEC = 2.0        # вікно вимірювання темпу
 NONHUMAN_TEMPO_THRESHOLD = 4           # ≥N різних endpoint за вікно = нелюдина
 
-# Антиген-кореляція: відбиток клієнта → недавні IP (для виявлення ротації IP).
+# Antigen correlation: client fingerprint → recent IPs (to detect IP rotation).
 _fp_history = defaultdict(deque)       # fp → deque[(ts, ip)]
 FP_WINDOW_SEC = 60.0
 _UUID_RE2 = re.compile(
     r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', re.I)
-# довгий ОДИН сегмент (ballot hash тощо) — БЕЗ '/', щоб не з'їдати «helios/elections»
+# a long SINGLE segment (ballot hash, etc.) — WITHOUT '/', so it does not eat "helios/elections"
 _HASH_RE2 = re.compile(r'/[A-Za-z0-9+=_-]{20,}')
 
-# Метрики + єдиний лок (Flask threaded=True → мутації мають бути атомарними)
+# Metrics + a single lock (Flask threaded=True → mutations must be atomic)
 _state_lock = threading.Lock()
 metrics = {
     "total": 0, "allowed": 0,
@@ -171,8 +171,8 @@ metrics = {
 }
 
 
-# SOC-алерти: лог-попередження при перетині порогів (для чергової зміни/SIEM).
-# Спрацьовує один раз на кожен рівень (×поріг), щоб не спамити.
+# SOC alerts: log warnings when thresholds are crossed (for the on-call shift/SIEM).
+# Fires once per level (×threshold), to avoid spamming.
 ALERT_THRESHOLDS = {"errors": 50, "blocked_ai": 100, "exfil_suspected": 1}
 _alerts_fired = set()
 
@@ -189,7 +189,7 @@ def _soc_alert(key: str, value: int):
 
 
 def bump(key: str, n=1, attack_class: str = None):
-    """Атомарне інкрементування метрик (+ SOC-алерт при перетині порогу)."""
+    """Atomic increment of metrics (+ a SOC alert when a threshold is crossed)."""
     fire = None
     with _state_lock:
         if key in metrics:
@@ -202,15 +202,15 @@ def bump(key: str, n=1, attack_class: str = None):
         _soc_alert(*fire)
 
 
-# ─── Логування рішень ─────────────────────────────────────────────────────────
+# ─── Decision logging ─────────────────────────────────────────────────────────
 
-# Ротація журналів за розміром (захист від необмеженого росту immune_blocks.jsonl).
+# Log rotation by size (protection against unbounded growth of immune_blocks.jsonl).
 MAX_LOG_BYTES = 50 * 1024 * 1024   # 50 МБ на файл
 LOG_BACKUPS   = 5                  # скільки ротованих копій тримати (.1 … .5)
 
 
 def _rotate_if_needed(path: Path):
-    """Ротує журнал, якщо він переріс MAX_LOG_BYTES (file → file.1 → … → file.N)."""
+    """Rotate the log if it grew past MAX_LOG_BYTES (file → file.1 → … → file.N)."""
     try:
         if not (path.exists() and path.stat().st_size >= MAX_LOG_BYTES):
             return
@@ -226,16 +226,16 @@ def _rotate_if_needed(path: Path):
         print(f"[!] Ротація журналу {path.name} не вдалася: {e}", file=sys.stderr)
 
 
-# Маскування ідентифікаторів виборця/бюлетеня у шляху перед логуванням.
-# Таємниця голосування: журнал НЕ повинен звʼязувати конкретного виборця
-# (voter_uuid) чи його бюлетень (ballot_hash) з дією/часом. Election UUID
-# не маскуємо — він публічний.
+# Masking voter/ballot identifiers in the path before logging.
+# Ballot secrecy: the log must NOT link a specific voter (voter_uuid) or their
+# ballot (ballot_hash) with an action/time. The election UUID is not masked —
+# it is public.
 _VOTER_SEG_RE  = re.compile(r"(/voters/)[^/?#]+", re.IGNORECASE)
 _BALLOT_SEG_RE = re.compile(r"(/ballots/)[^/?#]+", re.IGNORECASE)
 
 
 def _redact_pii(path: str) -> str:
-    """Маскує voter_uuid та ballot_hash у шляху (приватність журналу)."""
+    """Mask voter_uuid and ballot_hash in the path (log privacy)."""
     if not path:
         return path
     p = _VOTER_SEG_RE.sub(r"\1{voter}", path)
@@ -253,9 +253,9 @@ def log_decision(entry: dict):
 
 
 def _parse_client_ip(xff_header: str, remote_addr: str) -> str:
-    """Витягує IP клієнта з X-Forwarded-For. XFF може бути ланцюгом
-    'client, proxy1, proxy2' — беремо ПЕРШИЙ (реального клієнта), інакше один
-    і той самий клієнт із різними proxy-хвостами розщепив би трекінг."""
+    """Extract the client IP from X-Forwarded-For. XFF may be a chain
+    'client, proxy1, proxy2' — we take the FIRST (the real client), otherwise the
+    same client with different proxy tails would split the tracking."""
     if xff_header:
         first = xff_header.split(",")[0].strip()
         if first:
@@ -271,12 +271,12 @@ def _session_id() -> str:
     return request.cookies.get("sessionid", "")
 
 
-# Поведінковий «антиген» актора: відбиток клієнта за НАБОРОМ/ПОРЯДКОМ заголовків
-# + ключові значення (UA/Accept*). Дозволяє корелювати активність НЕ лише за IP:
-# адреса змінна (ротація підмережі — типове ухилення APT), а відбиток HTTP-клієнта
-# стабільний. Слабкий сам по собі для БЛОКУ (багато виборців можуть мати однаковий
-# браузер), тож використовується як СИГНАЛ ШІ (скільки IP за одним відбитком), а не
-# як детермінований блок — щоб не зачепити легіт-виборців за спільним UA.
+# Behavioral "antigen" of the actor: client fingerprint by the SET/ORDER of headers
+# + key values (UA/Accept*). Lets us correlate activity NOT only by IP: the address is
+# variable (subnet rotation — a typical APT evasion), while the HTTP-client fingerprint
+# is stable. Weak on its own for a BLOCK (many voters may have the same browser), so it
+# is used as an AI SIGNAL (how many IPs per one fingerprint), not as a deterministic
+# block — so as not to hit legit voters behind a shared UA.
 _FP_VALUE_HEADERS = ("User-Agent", "Accept", "Accept-Language", "Accept-Encoding")
 
 
@@ -287,17 +287,17 @@ def _client_fingerprint(headers) -> str:
     return "fp:" + hashlib.sha1(raw).hexdigest()[:16]
 
 
-# ─── Поведінкова траєкторія актора (для ШІ) ───────────────────────────────────
+# ─── Behavioral actor trajectory (for the AI) ─────────────────────────────────
 
 def _endpoint_label(path: str) -> str:
-    """Компактна мітка endpoint (UUID/hash замасковані) для траєкторії."""
+    """A compact endpoint label (UUID/hash masked) for the trajectory."""
     p = _UUID_RE2.sub("{id}", path)
     p = _HASH_RE2.sub("/{hash}", p)
     return p[:60]
 
 
 def _record_request(actor: str, method: str, path: str, now: float):
-    """Реєструє крок актора у траєкторію (потокобезпечно, з евікцією)."""
+    """Register an actor step in the trajectory (thread-safe, with eviction)."""
     with _state_lock:
         dq = _actor_history[actor]
         dq.append((now, method, _endpoint_label(path)))
@@ -317,8 +317,8 @@ def _record_request(actor: str, method: str, path: str, now: float):
 
 def _recent_distinct_endpoints(actor: str, now: float,
                                window: float = NONHUMAN_TEMPO_WINDOW_SEC) -> list:
-    """Відсортований список РІЗНИХ endpoint актора у вікні (єдине джерело темп-логіки
-    для прод-шляху і тестів)."""
+    """A sorted list of the actor's DISTINCT endpoints in the window (a single source of
+    the tempo logic for the prod path and tests)."""
     with _state_lock:
         return sorted({e[2] for e in _actor_history.get(actor, ()) if now - e[0] <= window})
 
@@ -326,13 +326,13 @@ def _recent_distinct_endpoints(actor: str, now: float,
 def _nonhuman_tempo(actor: str, now: float,
                     window: float = NONHUMAN_TEMPO_WINDOW_SEC,
                     threshold: int = NONHUMAN_TEMPO_THRESHOLD) -> bool:
-    """Детермінований сигнал бота: ≥threshold РІЗНИХ endpoint за <window (людина
-    фізично не може). FP-safe: легітимний виборець не клацає 4 сторінки за 2с."""
+    """Deterministic bot signal: ≥threshold DISTINCT endpoints in <window (a human
+    physically cannot). FP-safe: a legitimate voter does not click 4 pages in 2s."""
     return len(_recent_distinct_endpoints(actor, now, window)) >= threshold
 
 
 def _record_fingerprint(fp: str, ip: str, now: float):
-    """Реєструє IP під відбитком клієнта (антиген) — для виявлення ротації IP."""
+    """Register the IP under the client fingerprint (antigen) — to detect IP rotation."""
     with _state_lock:
         dq = _fp_history[fp]
         dq.append((now, ip))
@@ -351,13 +351,13 @@ def _record_fingerprint(fp: str, ip: str, now: float):
 
 
 def _fp_distinct_ips(fp: str, now: float, window: float = FP_WINDOW_SEC) -> int:
-    """Скільки РІЗНИХ IP використав цей відбиток за вікно (>1 за секунди = ротація IP)."""
+    """How many DISTINCT IPs this fingerprint used in the window (>1 within seconds = IP rotation)."""
     with _state_lock:
         return len({ip for ts, ip in _fp_history.get(fp, ()) if now - ts <= window})
 
 
 def _trajectory_summary(actor: str, now: float) -> str:
-    """Текстове зведення останніх кроків актора (для промпту ШІ)."""
+    """A text summary of the actor's recent steps (for the AI prompt)."""
     with _state_lock:
         entries = [e for e in _actor_history.get(actor, ())
                    if now - e[0] <= TRAJ_WINDOW_SEC]
@@ -371,27 +371,27 @@ def _trajectory_summary(actor: str, now: float) -> str:
     span = now - entries[0][0]
     distinct = len({label for _, _, label in entries})
     header = f"{len(entries)} кроків ({distinct} унікальних endpoint) за {span:.1f}с"
-    # явний детермінований сигнал нелюдського темпу — щоб ШІ не сплутав recon-маскування
-    # з людським переглядом: 4+ різних endpoint за <2с фізично неможливі для людини
+    # an explicit deterministic non-human-tempo signal — so the AI does not confuse recon
+    # masquerading with human browsing: 4+ different endpoints in <2s are physically impossible for a human
     if distinct >= 4 and span < 2.0:
         header = ("⚠ НЕЛЮДСЬКИЙ ТЕМП (автоматизація/бот: фізично неможливо для людини) — "
                   + header)
     return header + ":\n" + "\n".join(lines)
 
 
-# Валідація сесії у Helios з TTL-кешем. Позитивний результат кешуємо надовго,
-# негативний — коротко: інакше анонімна сесія, перевірена ДО логіну, отруїть кеш
-# на той самий sessionid після логіну (Helios переви.користовує ключ сесії).
+# Session validation in Helios with a TTL cache. A positive result is cached for long,
+# a negative one — briefly: otherwise an anonymous session checked BEFORE login would poison
+# the cache for the same sessionid after login (Helios reuses the session key).
 _session_cache = {}          # sessionid → (is_valid: bool, expiry: float)
 SESSION_TTL_VALID = 30.0     # дійсна сесія лишається дійсною
 SESSION_TTL_INVALID = 3.0    # недійсну перевіряємо часто (вікно після логіну)
 SESSION_CACHE_MAX = 5000
 
-# Circuit-breaker валідації сесій: кожна невалідна сесія тригерить blocking-call до
-# Helios. Під флудом унікальних cookie це амплифікує навантаження на backend і додає
-# латентність у L2. Якщо Helios підряд відмовляє/таймаутить — РОЗМИКАЄМО ланцюг:
-# певний час валідацію не викликаємо (повертаємо False швидко). Login/cast і так
-# ALLOW-by-default, тож «не валідовано» не дає false-positive.
+# Circuit breaker for session validation: every invalid session triggers a blocking call to
+# Helios. Under a flood of unique cookies this amplifies backend load and adds latency to L2.
+# If Helios fails/times out in a row — we OPEN the circuit: for a while we do not call
+# validation (return False quickly). Login/cast are ALLOW-by-default anyway, so
+# "not validated" does not cause a false positive.
 HELIOS_CB_FAIL_THRESHOLD = 3     # стільки збоїв підряд → розмикання
 HELIOS_CB_OPEN_SEC = 10.0        # на скільки розмикаємо (не звертаємось до Helios)
 HELIOS_CB_TIMEOUT = 3.0          # таймаут одного validation-call (було 5с)
@@ -404,7 +404,7 @@ def _cb_is_open(now: float) -> bool:
 
 
 def _cb_record_fail(now: float):
-    """Реєструє збій Helios; при порозі — розмикає ланцюг на HELIOS_CB_OPEN_SEC."""
+    """Register a Helios failure; at the threshold — open the circuit for HELIOS_CB_OPEN_SEC."""
     with _state_lock:
         _helios_cb["fails"] += 1
         if _helios_cb["fails"] >= HELIOS_CB_FAIL_THRESHOLD:
@@ -422,9 +422,9 @@ _ELECTION_RE = re.compile(r"/helios/elections/([0-9a-fA-F-]{36})")
 
 def _validate_session(session_id: str, req_path: str = "") -> bool:
     """
-    Перевіряє, чи cookie відповідає РЕАЛЬНО автентифікованому виборцю Helios
-    (серверний сигнал, не підробити). Сесії Helios привʼязані до ВИБОРІВ, тому
-    валідуємо через election view, а не глобальний /auth/. Кеш на 30с + breaker.
+    Check whether the cookie corresponds to a REALLY authenticated Helios voter
+    (a server signal, unforgeable). Helios sessions are tied to ELECTIONS, so we
+    validate via the election view, not the global /auth/. 30s cache + breaker.
     """
     if not session_id:
         return False
@@ -434,11 +434,11 @@ def _validate_session(session_id: str, req_path: str = "") -> bool:
         ent = _session_cache.get(cache_key)
         if ent and now < ent[1]:
             return ent[0]
-    # Circuit-breaker розімкнено (Helios нездоровий) → не амплифікуємо навантаження,
-    # повертаємо False швидко (не кешуємо — щоб перевірити знову після відновлення).
+    # Circuit breaker open (Helios unhealthy) → do not amplify load,
+    # return False quickly (do not cache — to check again after recovery).
     if _cb_is_open(now):
         return False
-    # визначаємо election зі шляху запиту (інакше валідація неможлива)
+    # determine the election from the request path (otherwise validation is impossible)
     m = _ELECTION_RE.search(req_path or "")
     valid = False
     if m:
@@ -448,7 +448,7 @@ def _validate_session(session_id: str, req_path: str = "") -> bool:
                              cookies={"sessionid": session_id},
                              timeout=HELIOS_CB_TIMEOUT, allow_redirects=False)
             body = r.text.lower()
-            # анонім бачить login-gate / редірект; залогінений виборець — ні
+            # an anonymous user sees a login-gate / redirect; a logged-in voter does not
             is_login_gate = ("log in to view" in body or
                              "password_voter_login" in body or
                              r.status_code in (302, 301))
@@ -474,13 +474,13 @@ def _recent_ip_count(ip: str) -> int:
         while dq and (now - dq[0]) > RATE_WINDOW_SEC:
             dq.popleft()
         count = len(dq)
-        # Евікція мертвих IP (захист від memory-DoS): прибираємо порожні
-        # та найстаріші ключі, якщо словник переріс межу.
+        # Eviction of dead IPs (memory-DoS protection): remove empty
+        # and oldest keys if the dict grew past the limit.
         if len(_ip_window) > MAX_TRACKED_IPS:
             stale = [k for k, v in _ip_window.items() if not v]
             for k in stale:
                 del _ip_window[k]
-            # якщо все ще завелико — видаляємо найстаріші за останнім таймстампом
+            # if still too large — remove the oldest by last timestamp
             if len(_ip_window) > MAX_TRACKED_IPS:
                 oldest = sorted(_ip_window.items(), key=lambda kv: kv[1][-1] if kv[1] else 0)
                 for k, _ in oldest[: len(_ip_window) - MAX_TRACKED_IPS]:
@@ -488,16 +488,16 @@ def _recent_ip_count(ip: str) -> int:
     return count
 
 
-# ─── Блокування ───────────────────────────────────────────────────────────────
+# ─── Blocking ─────────────────────────────────────────────────────────────────
 
 def make_block_response(decision: dict, tier: str) -> Response:
     body = {
         "error": "Forbidden — Digital Immune System",
         "incident_time": datetime.now(timezone.utc).isoformat(),
     }
-    # Деталі детекції (attack_class/reason/рівень) — лише у VERBOSE-режимі (демо/звіти).
-    # У проді не підказуємо зловмиснику, ЩО саме спрацювало (мінімізуємо oracle для
-    # обходу). Журнал/метрики все одно фіксують повну причину серверно.
+    # Detection details (attack_class/reason/level) — only in VERBOSE mode (demo/reports).
+    # In prod we do not hint to the attacker WHAT triggered (minimize the bypass oracle).
+    # The log/metrics still record the full reason server-side.
     if VERBOSE_BLOCKS:
         body["blocked_by"] = tier
         body["attack_class"] = decision.get("attack_class")
@@ -506,35 +506,35 @@ def make_block_response(decision: dict, tier: str) -> Response:
                     status=403, content_type="application/json")
 
 
-# ─── Форвардинг до Helios ─────────────────────────────────────────────────────
+# ─── Forwarding to Helios ─────────────────────────────────────────────────────
 
 _BACKEND_HOST = urlsplit(HELIOS_BACKEND).netloc
 
 
 def _safe_backend_url(path: str):
     """
-    Будує URL до backend, гарантуючи що шлях НЕ виходить за межі бекенда
-    (захист від SSRF / path-escape). Повертає url або None, якщо підозріло.
+    Build the backend URL, ensuring the path does NOT escape the backend
+    (SSRF / path-escape protection). Returns the url or None if suspicious.
     """
-    # абсолютний URL / protocol-relative / backslash — заборонено
+    # absolute URL / protocol-relative / backslash — forbidden
     if "://" in path or path.startswith("//") or "\\" in path:
         return None
-    # будь-який сегмент ".." — заборонено (строго, без спроб нормалізації)
+    # any ".." segment — forbidden (strict, no normalization attempts)
     if ".." in path.split("/"):
         return None
     clean = posixpath.normpath("/" + path).lstrip("/")
     if clean.startswith(".."):
         return None
     url = f"{HELIOS_BACKEND}/{clean}"
-    # фінальна перевірка: host має лишитися backend-host
+    # final check: the host must stay the backend host
     if urlsplit(url).netloc != _BACKEND_HOST:
         return None
     return url
 
 
 def _exfil_verdict(path: str, method: str, size: int) -> str:
-    """Класифікує ВІДПОВІДЬ на чутливому list-endpoint за обсягом:
-    'block' (hard), 'flag' (soft) або '' (норма). Чиста функція — тестується без серверів."""
+    """Classify a RESPONSE on a sensitive list endpoint by size:
+    'block' (hard), 'flag' (soft) or '' (normal). Pure function — tested without servers."""
     if method != "GET" or not any(s in path for s in EXFIL_INSPECT_PATHS):
         return ""
     if EXFIL_HARD_BYTES and size >= EXFIL_HARD_BYTES:
@@ -552,9 +552,9 @@ def forward_to_helios(path: str) -> Response:
                                    ensure_ascii=False),
                         status=400, content_type="application/json")
     fwdHeaders = {k: v for k, v in request.headers if k.lower() not in HOP_BY_HOP}
-    # Проксі — межа довіри: ПЕРЕЗАПИСУЄМО X-Forwarded-For на РЕАЛЬНИЙ IP клієнта
-    # (інакше клієнтський спуфнутий XFF пройшов би до Helios і отруїв би його логи/
-    # rate-логіку). Single-hop: бекенд бачить лише наш висновок про джерело.
+    # The proxy is the trust boundary: we OVERWRITE X-Forwarded-For with the REAL client IP
+    # (otherwise a client-spoofed XFF would pass to Helios and poison its logs/
+    # rate logic). Single-hop: the backend sees only our conclusion about the source.
     fwdHeaders = {k: v for k, v in fwdHeaders.items() if k.lower() != "x-forwarded-for"}
     fwdHeaders["X-Forwarded-For"] = _client_ip()
     try:
@@ -576,12 +576,12 @@ def forward_to_helios(path: str) -> Response:
     respHeaders = [(k, v) for k, v in resp.raw.headers.items()
                    if k.lower() not in excluded]
     content = resp.content
-    # Огрублення timestamp на ballot board (приватність: проти timing-деанону)
+    # Timestamp coarsening on the ballot board (privacy: against timing-deanon)
     ctype = resp.headers.get("Content-Type", "")
     if (COARSEN_BALLOT_TS and "/ballots" in path
             and any(t in ctype for t in ("json", "text", "html"))):
         content = _coarsen_timestamps(content)
-    # Інспекція відповіді на ексфільтрацію (аномально великий дамп списку)
+    # Response inspection for exfiltration (an anomalously large list dump)
     exfil = _exfil_verdict("/" + path, request.method, len(content or b""))
     if exfil == "block":
         bump("blocked_fast", attack_class="data_exfiltration")
@@ -615,8 +615,8 @@ def forward_to_helios(path: str) -> Response:
 
 
 def _coarsen_timestamps(body: bytes) -> bytes:
-    """Округлює ISO-timestamp до години (HH:MM:SS → HH:00:00) у тілі відповіді.
-    Безпечно: при будь-якій помилці повертає оригінал без змін."""
+    """Round ISO timestamps to the hour (HH:MM:SS → HH:00:00) in the response body.
+    Safe: on any error returns the original unchanged."""
     try:
         text = body.decode("utf-8")
     except (UnicodeDecodeError, AttributeError):
@@ -626,7 +626,7 @@ def _coarsen_timestamps(body: bytes) -> bytes:
 
 @app.after_request
 def _add_security_headers(resp):
-    """Інʼєкція безпечних заголовків у КОЖНУ відповідь (захист браузера виборця)."""
+    """Inject secure headers into EVERY response (voter browser protection)."""
     if SECURITY_HEADERS_ENABLED:
         for k, v in SECURITY_HEADERS.items():
             resp.headers[k] = v
@@ -641,7 +641,7 @@ def _too_large(e):
                     status=413, content_type="application/json")
 
 
-# ─── Головний маршрут (catch-all) ─────────────────────────────────────────────
+# ─── Main route (catch-all) ───────────────────────────────────────────────────
 
 @app.route("/__immune__/stats", methods=["GET"])
 def stats():
@@ -671,7 +671,7 @@ def stats():
 
 @app.route("/__immune__/metrics", methods=["GET"])
 def prometheus_metrics():
-    """Експорт метрик у Prometheus text-форматі (для scrape SOC/Grafana)."""
+    """Export metrics in Prometheus text format (for SOC/Grafana scraping)."""
     if STATS_TOKEN and request.args.get("token") != STATS_TOKEN \
             and request.headers.get("X-Stats-Token") != STATS_TOKEN:
         return Response("# forbidden\n", status=403, content_type="text/plain")
@@ -701,7 +701,7 @@ def prometheus_metrics():
     metric("dis_ai_rate_capped_total", ai.get("rate_capped", 0), "counter", "ШІ rate-cap спрацювань")
     metric("dis_learned_signatures", fr.get("learned_signatures", 0), "gauge",
            "Сигнатур, вивчених L1 від ШІ")
-    # розбивка блоків за класом атаки (label)
+    # breakdown of blocks by attack class (label)
     lines.append("# HELP dis_blocked_by_class_total Блоків за класом атаки")
     lines.append("# TYPE dis_blocked_by_class_total counter")
     for ac, cnt in snap["by_attack_class"].items():
@@ -719,9 +719,9 @@ def proxy(path):
     bump("total")
     method   = request.method
     fullPath = "/" + path
-    # повний шлях із query-рядком — щоб FastReflex/ШІ бачили інʼєкції в параметрах.
-    # ДЕКОДУЄМО %-кодування для ДЕТЕКЦІЇ (форвардиться оригінал): інакше %20-SQL
-    # ('union%20select') та %7B-SSTI ('%7B%7B') проходили б повз патерни.
+    # the full path with the query string — so FastReflex/AI see injections in params.
+    # We DECODE %-encoding for DETECTION (the original is forwarded): otherwise %20-SQL
+    # ('union%20select') and %7B-SSTI ('%7B%7B') would slip past the patterns.
     inspectPath = fullPath
     if request.query_string:
         inspectPath = fullPath + "?" + request.query_string.decode("utf-8", "replace")
@@ -729,16 +729,16 @@ def proxy(path):
     headers  = dict(request.headers)
     clientIp = _client_ip()
     sessionId = _session_id()
-    # Актор для траєкторії/темпу — clientIp (server-наблюдаемое джерело), НЕ cookie:
-    # інакше атакувальник уникав би поведінкового трекінгу, ротуючи sessionid-cookie.
+    # The actor for trajectory/tempo is clientIp (a server-observed source), NOT a cookie:
+    # otherwise an attacker would evade behavioral tracking by rotating the sessionid cookie.
     actorKey = clientIp
     _now0 = time.time()
     _record_request(actorKey, method, fullPath, _now0)         # поведінкова траєкторія
-    # Антиген-кореляція: реєструємо IP під відбитком клієнта (анти-ротація IP).
+    # Antigen correlation: register the IP under the client fingerprint (anti IP-rotation).
     fpKey = _client_fingerprint(request.headers)
     _record_fingerprint(fpKey, clientIp, _now0)
 
-    # ─── Уровень 1: FastReflex ────────────────────────────────────────────────
+    # ─── Layer 1: FastReflex ──────────────────────────────────────────────────
     decision = reflex.evaluate(method, inspectPath, headers, clientIp, sessionId)
     verdict = decision["verdict"]
 
@@ -760,12 +760,12 @@ def proxy(path):
 
     threat_score = 0.0   # ймовірність загрози (для ROC-кривої у бенчмарку)
 
-    # ─── Поведінковий сигнал: нелюдський темп (бот/APT-розвідка) ───────────────
-    # Для ДІЙ ВИБОРЦЯ (login/cast): якщо актор перед дією прокрутив 4+ різних
-    # endpoint за <2с — це підозра на автоматизовану recon→дію. АЛЕ це НЕ хард-блок:
-    # у e-voting хибне блокування = позбавлення голосу, а швидкий-але-легітимний
-    # виборець теж можливий. Тому темп ЕСКАЛЮЄ на ШІ (INSPECT), який бачить ПОВНУ
-    # траєкторію (+прапор темпу) і відрізняє recon-sweep від voter-flow.
+    # ─── Behavioral signal: non-human tempo (bot/APT recon) ───────────────────
+    # For VOTER ACTIONS (login/cast): if the actor scrolled 4+ different endpoints in
+    # <2s before the action — this is a suspicion of automated recon→action. BUT it is
+    # NOT a hard block: in e-voting a false block = disenfranchisement, and a fast-but-legit
+    # voter is also possible. So the tempo ESCALATES to the AI (INSPECT), which sees the FULL
+    # trajectory (+the tempo flag) and distinguishes a recon-sweep from a voter-flow.
     _VOTER_ACTIONS = ("/auth/password/login", "/password_voter_login", "/cast")
     is_voter_action = (any(a in fullPath for a in _VOTER_ACTIONS)
                        and "cast_confirm" not in fullPath)
@@ -778,15 +778,15 @@ def proxy(path):
               f"{len(_eps)} endpoints за {NONHUMAN_TEMPO_WINDOW_SEC}с "
               f"→ рішення виносить ШІ", flush=True)
 
-    # Тіло читаємо ОДИН раз (Flask кешує get_data — forward отримає те саме).
-    # Бэкстоп сканує ГЛИБШЕ (payload не лише на початку), ШІ — лише превʼю 2КБ.
+    # Read the body ONCE (Flask caches get_data — forward gets the same).
+    # The backstop scans DEEPER (payload not only at the start), the AI — only a 2KB preview.
     _raw_body = request.get_data(as_text=True)[:BACKSTOP_BODY_BYTES] if request.content_length else ""
     body = _raw_body[:AI_BODY_PREVIEW]   # превʼю для ШІ
 
-    # ─── Детермінований PAYLOAD-БЭКСТОП (path АБО ТІЛО) ────────────────────────
-    # Гарантія: ШІ НЕ можна обманути (prompt-injection) у бік пропуску ОДНОЗНАЧНОГО
-    # payload. L1 матчить лише path; SQLi/SSTI у ТІЛІ POST його обходять і доходять
-    # до ШІ — тут детермінований override блокує їх незалежно від вердикту ШІ.
+    # ─── Deterministic PAYLOAD BACKSTOP (path OR body) ────────────────────────
+    # Guarantee: the AI cannot be tricked (prompt-injection) into passing an UNAMBIGUOUS
+    # payload. L1 matches only the path; SQLi/SSTI in the POST BODY bypass it and reach
+    # the AI — here a deterministic override blocks them regardless of the AI verdict.
     if hard_payload_present(inspectPath, _raw_body):
         ac = classify_hard_payload(inspectPath, _raw_body) or "payload_injection"
         latency = round((time.perf_counter() - t0) * 1000, 2)
@@ -807,29 +807,29 @@ def proxy(path):
         resp.headers["X-Immune-Score"] = "1.0"
         return resp
 
-    # ─── Уровень 2: AIAnalyst (для INSPECT) ───────────────────────────────────
+    # ─── Layer 2: AIAnalyst (for INSPECT) ─────────────────────────────────────
     if verdict == "INSPECT":
         bump("inspected")
         behavior = {
             "client_ip":     clientIp,
-            # серверний сигнал: скільки разів цей IP дійшов до ШІ-аналізу за вікно
-            # (вторинна підказка «недавня підозрілість», не повний лічильник трафіку)
+            # server signal: how many times this IP reached AI analysis in the window
+            # (a secondary hint of "recent suspiciousness", not a full traffic counter)
             "recent_count":  _recent_ip_count(clientIp),
             "cast_count":    reflex.cast_count(sessionId or clientIp),  # серверний сигнал
             "session_cookie_present": bool(sessionId),       # клієнтський (непідтверджений)
-            # СЕРВЕРНА валідація сесії у Helios — справжній сигнал автентифікації
+            # SERVER-side session validation in Helios — the real authentication signal
             "session_validated": _validate_session(sessionId, fullPath),
-            # ПОВЕДІНКОВА ТРАЄКТОРІЯ — для виявлення багатокрокових атак/APT
+            # BEHAVIORAL TRAJECTORY — to detect multi-step attacks/APT
             "trajectory": _trajectory_summary(actorKey, time.time()),
-            # АНТИГЕН: скільки РІЗНИХ IP за одним відбитком клієнта (ротація IP = ухилення)
+            # ANTIGEN: how many DIFFERENT IPs per one client fingerprint (IP rotation = evasion)
             "fp_distinct_ips": _fp_distinct_ips(fpKey, _now0),
-            # НЕЛЮДСЬКИЙ ТЕМП перед дією виборця (4+ endpoint <2с) — сильний сигнал APT
+            # NON-HUMAN TEMPO before a voter action (4+ endpoints <2s) — a strong APT signal
             "nonhuman_tempo": nonhuman_tempo,
         }
         aiDecision = analyst.analyze(method, inspectPath, headers, body, behavior)
         threat_score = float(aiDecision.get("confidence") or 0.0)
-        # Навчання L1: ШІ синтезував сигнатуру нового патерну → FastReflex ловитиме
-        # повторні миттєво (adaptive→innate immunity)
+        # L1 learning: the AI synthesized a signature of a new pattern → FastReflex will
+        # catch repeats instantly (adaptive→innate immunity)
         learned = aiDecision.get("learnable_signature")
         if learned and reflex.add_learned_signature(learned, aiDecision.get("attack_class")):
             print(f"  🧬 L1 ВИВЧИВ сигнатуру «{learned}» від ШІ "
@@ -862,12 +862,12 @@ def proxy(path):
             resp = make_block_response(aiDecision, "AIAnalyst")
             resp.headers["X-Immune-Score"] = str(round(threat_score, 4))
             return resp
-        # ШІ дозволив
+        # the AI allowed it
         if not aiDecision.get("from_cache"):
             print(f"  🟡 INSPECT→ALLOW [L2 ШІ] {method} {fullPath} "
                   f"({aiDecision.get('latency_ms')}ms)", flush=True)
 
-    # ─── ALLOW: форвард до Helios ─────────────────────────────────────────────
+    # ─── ALLOW: forward to Helios ─────────────────────────────────────────────
     response = forward_to_helios(path)
     response.headers["X-Immune-Score"] = str(round(threat_score, 4))   # для ROC
     latency = round((time.perf_counter() - t0) * 1000, 2)
@@ -880,9 +880,9 @@ def proxy(path):
 
 def _serve():
     """
-    Запускає сервер. Якщо доступний waitress (production WSGI) — використовує
-    його; інакше — Flask dev-сервер (PoC) з явним попередженням.
-    Примусово dev-режим: --dev.
+    Start the server. If waitress (production WSGI) is available — use it;
+    otherwise — the Flask dev server (PoC) with an explicit warning.
+    Force dev mode: --dev.
     """
     use_dev = "--dev" in sys.argv
     if not use_dev:
@@ -890,10 +890,10 @@ def _serve():
             from waitress import serve as waitress_serve
             print("  Сервер: waitress (production WSGI), threads=8")
             print("=" * 68)
-            # ВАЖЛИВО: за замовчуванням waitress ВИРІЗАЄ X-Forwarded-For
-            # (clear_untrusted_proxy_headers=True) → проксі бачив би всіх як 127.0.0.1,
-            # і per-IP трекінг (rate-cap, траєкторія/темп) схлопувався б. Довіряємо
-            # XFF від ДОВІРЕНОГО peer (тут — localhost; у проді вкажи IP свого LB).
+            # IMPORTANT: by default waitress STRIPS X-Forwarded-For
+            # (clear_untrusted_proxy_headers=True) → the proxy would see everyone as 127.0.0.1,
+            # and per-IP tracking (rate-cap, trajectory/tempo) would collapse. We trust
+            # XFF from a TRUSTED peer (here — localhost; in prod set your LB's IP).
             waitress_serve(app, host=LISTEN_HOST, port=PROXY_PORT, threads=8,
                            trusted_proxy=LISTEN_HOST,
                            trusted_proxy_headers={"x-forwarded-for"},

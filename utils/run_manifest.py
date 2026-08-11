@@ -1,12 +1,12 @@
 """
-Run-маніфест: єдиний запис про фінальний прогін (для відтворюваності розділу 3).
-Цифрова імунна система — utils/run_manifest.py
+Run manifest: a single record of the final run (for reproducibility of chapter 3).
+Digital immune system — utils/run_manifest.py
 
-Збирає в один файл: git-commit, модель ШІ, версію Python, час (UTC) і ЗВЕДЕННЯ
-ключових метрик з останніх звітів. Так кожне число дисертації привʼязане до
-конкретного коміту й прогону. Пише reports/run_manifest.json + .txt.
+Collects into one file: git-commit, AI model, Python version, time (UTC) and a
+SUMMARY of key metrics from the latest reports. So every number in the dissertation
+is tied to a concrete commit and run. Writes reports/run_manifest.json + .txt.
 
-Запуск:  python utils/run_manifest.py   (сам, або як крок campaign)
+Run:  python utils/run_manifest.py   (standalone, or as a campaign step)
 """
 
 import sys

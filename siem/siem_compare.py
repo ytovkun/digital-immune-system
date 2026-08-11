@@ -54,7 +54,7 @@ SIEM_PRECISION_NOTE = ("Precision=1.0 бо SIEM не дав ХИБНИХ три�
 
 
 def _detect_tool(events: list) -> str:
-    """Автовизначення формату: Wazuh (rule.id + full_log) чи Suricata (event_type=alert)."""
+    """Auto-detect the format: Wazuh (rule.id + full_log) or Suricata (event_type=alert)."""
     for ev in events[:50]:
         if isinstance(ev.get("rule"), dict) and ev["rule"].get("id"):
             return "Wazuh"
@@ -77,9 +77,9 @@ def _load_events(path: Path) -> list:
 
 
 def _parse_logtest(text: str) -> dict:
-    """Парсинг текстового виводу `wazuh-logtest -v` (детермінований, без tailing).
-    Кожен подієвий блок починається з '**Phase 1'; містить 'full event:' (з _bid),
-    'Rule id:' та 'Level:'. Детекція = level >= WAZUH_MIN_LEVEL."""
+    """Parse the text output of `wazuh-logtest -v` (deterministic, no tailing).
+    Each event block starts with '**Phase 1'; contains 'full event:' (with _bid),
+    'Rule id:' and 'Level:'. Detection = level >= WAZUH_MIN_LEVEL."""
     hits = {}
     for blk in re.split(r"\*\*Phase 1", text):
         mbid = _BID_RE.search(blk)
@@ -100,8 +100,8 @@ def _parse_logtest(text: str) -> dict:
 
 
 def _alerted_bids(path: Path) -> tuple:
-    """Повертає (tool, {bid → множина правил/сигнатур, що спрацювали}).
-    Розуміє Wazuh alerts.json, Suricata eve.json та текст `wazuh-logtest -v`."""
+    """Return (tool, {bid → set of rules/signatures that fired}).
+    Understands Wazuh alerts.json, Suricata eve.json and `wazuh-logtest -v` text."""
     hits = {}
     if not path.exists():
         return "?", hits
@@ -144,7 +144,7 @@ def _metrics(tp, fn, fp, tn):
 
 
 def _default_alerts() -> Path:
-    """Шукає файл алертів: спершу Wazuh, потім Suricata."""
+    """Look for the alerts file: Wazuh first, then Suricata."""
     for p in (SIEM_DIR / "wazuh_alerts.json", SIEM_DIR / "suricata" / "eve.json"):
         if p.exists():
             return p

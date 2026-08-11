@@ -1,46 +1,46 @@
 """
-Оркестратор пайплайну ЦІС — один вхід замість ручної послідовності команд.
-Цифрова імунна система — run_all.py
+DIS pipeline orchestrator — one entry point instead of a manual sequence of commands.
+Digital immune system — run_all.py
 
-ПРЕСЕТИ (позиційний аргумент):
-  analyze   Аналіз НАЯВНИХ даних, БЕЗ серверів і ключа:
+PRESETS (positional argument):
+  analyze   Analysis of EXISTING data, WITHOUT servers or a key:
               risk_scorer → immune_response_engine → metrics_summary
-            (нічого не генерує і не виконує — працює на твоїх reports/).
+            (generates and executes nothing — works on your reports/).
 
-  defense   Перевірка захисту через ImmuneProxy (:8000):
+  defense   Defense check via ImmuneProxy (:8000):
               benchmark → demo_before_after → metrics_summary → defense_report
-            Передумова: Helios на :8001. Проксі :8000 — або підніми сама, або
-            додай --with-defense (підніметься у фоні й згасне в кінці).
+            Precondition: Helios on :8001. Proxy :8000 — either start it yourself, or
+            add --with-defense (started in the background and stopped at the end).
 
-  offense   OFFENSIVE прогін проти СИРОГО Helios (:8001):
+  offense   OFFENSIVE run against RAW Helios (:8001):
               [clean] → [generate] → [execute] → score → ire
-            generate/execute можна пропустити (--skip-generate / --skip-execute),
-            clean — лише за явним --clean (бо стирає reports/).
-            Передумови: Helios :8001, ANTHROPIC_API_KEY у .env (для generate).
+            generate/execute can be skipped (--skip-generate / --skip-execute),
+            clean — only with an explicit --clean (as it wipes reports/).
+            Preconditions: Helios :8001, ANTHROPIC_API_KEY in .env (for generate).
 
-  campaign  ПОВНИЙ звіт «без захисту vs із захистом» однією командою:
-              generate → атаки baseline(:8001) → атаки defended(через проксі :8000)
-              → звіт baseline → звіт defended → ко-еволюція
-            Пише reports/attacks/{baseline,defended}/ окремо; проксі :8000
-            підіймається автоматично. Передумова: Helios :8001 (+ ключ для generate).
-            Пропустити генерацію: --skip-generate (узяти наявні сценарії).
+  campaign  FULL "without defense vs with defense" report in one command:
+              generate → baseline attacks(:8001) → defended attacks(via proxy :8000)
+              → baseline report → defended report → co-evolution
+            Writes reports/attacks/{baseline,defended}/ separately; proxy :8000
+            is started automatically. Precondition: Helios :8001 (+ key for generate).
+            Skip generation: --skip-generate (take existing scenarios).
 
-  test      Unit-тести (pytest) — без серверів і ключа.
+  test      Unit tests (pytest) — no servers or key.
 
-  all       offense, потім defense.
+  all       offense, then defense.
 
-ГРАНУЛЯРНІ ФЛАГИ ШАГІВ (якщо задано бодай один — пресет ігнорується, виконуються
-лише вибрані кроки у канонічному порядку):
+GRANULAR STEP FLAGS (if at least one is set — the preset is ignored, only the
+selected steps run in canonical order):
   --clean --generate --execute --score --ire --benchmark --demo --metrics --defense-report
 
-ІНШІ ФЛАГИ:
-  --with-defense   Підняти immune_proxy :8000 у фоні навколо defense-кроків і згасити в кінці
-                   (якщо проксі вже працює — використає наявний, не чіпатиме).
-  --skip-generate  У пресеті offense не генерувати сценарії (використати наявні)
-  --skip-execute   У пресеті offense не виконувати атаки (використати наявні reports/)
-  --keep-going     Не зупинятись на першій помилці
+OTHER FLAGS:
+  --with-defense   Start immune_proxy :8000 in the background around defense steps and stop it at the end
+                   (if the proxy is already running — uses the existing one, does not touch it).
+  --skip-generate  In the offense preset do not generate scenarios (use existing ones)
+  --skip-execute   In the offense preset do not execute attacks (use existing reports/)
+  --keep-going     Do not stop on the first error
 
-Приклади:
+Examples:
   python run_all.py analyze
   python run_all.py defense --with-defense
   python run_all.py offense --skip-generate
@@ -57,12 +57,12 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-PY = sys.executable   # той самий інтерпретатор (venv)
+PY = sys.executable   # the same interpreter (venv)
 
 PROXY_STATS_URL = "http://localhost:8000/__immune__/stats"
 HELIOS_URL = "http://localhost:8001"
 
-# Кроки: ім'я → (підпис, argv). Канонічний порядок — у ORDER.
+# Steps: name → (label, argv). Canonical order — in ORDER.
 STEPS = {
     "clean":          ("Очистка артефактів (сценарії лишаємо)",
                        [PY, "utils/cleaner.py", "--keep-scenarios", "--yes"]),
@@ -88,7 +88,7 @@ STEPS = {
                        [PY, "immune_system/coevolution_report.py"]),
     "manifest":       ("Run-маніфест (git-commit + модель + зведення метрик)",
                        [PY, "utils/run_manifest.py"]),
-    # ── Кроки кампанії: дві гілки прогону — без захисту vs із захистом ──
+    # ── Campaign steps: two run branches — without defense vs with defense ──
     "execute_baseline": ("Атаки проти СИРОГО Helios :8001 (BASELINE, без захисту)",
                          [PY, "core/red_team_agent.py", "all"],
                          {"HELIOS_BASE_URL": "http://localhost:8001",
@@ -105,7 +105,7 @@ STEPS = {
                              [PY, "immune_system/coevolution_report.py", "--scope", "defended"]),
     "attack_flow":    ("Kill chain / attack_flow.json (для візуалізації)",
                        [PY, "core/attack_flow.py", "--scope", "defended"]),
-    # ── Security-тести самої ЦІС (пишуть reports/security/<key>.json) ──
+    # ── Security tests of the DIS itself (write reports/security/<key>.json) ──
     "sec_fpr":     ("Security: false-positive rate (легіт-виборець)",
                     [PY, "immune_system/false_positive_test.py"]),
     "sec_heldout": ("Security: узагальнення на нові атаки",
@@ -117,11 +117,11 @@ STEPS = {
     "redetection": ("Re-detection через імунну пам'ять (5.1)",
                     [PY, "immune_system/redetection_test.py"]),
 }
-# Канонічний порядок гранулярних кроків (clean — не тут: він лише модифікатор,
-# що додається спереду за --clean, щоб випадково не стерти reports/).
+# Canonical order of granular steps (clean is not here: it is only a modifier
+# prepended by --clean, so reports/ are not accidentally wiped).
 ORDER = ["generate", "execute", "score", "ire",
          "benchmark", "demo", "defense_report", "coevolution", "metrics"]
-# Кроки, що потребують піднятого проксі :8000
+# Steps that require the :8000 proxy running
 DEFENSE_STEPS = {"benchmark", "demo", "defense_report", "execute_defended",
                  "sec_fpr", "sec_heldout", "sec_inject", "sec_flood", "redetection"}
 SECURITY_STEPS = ["sec_fpr", "sec_heldout", "sec_inject", "sec_flood"]
@@ -130,27 +130,27 @@ PRESETS = {
     "analyze": ["score", "ire", "metrics"],
     "defense": ["benchmark", "demo", "defense_report", "metrics"],
     "offense": ["generate", "execute", "score", "ire"],
-    # campaign — ПОВНИЙ прогін, що наповнює ВЕСЬ дашборд однією командою:
-    # генерація → атаки baseline(:8001) → атаки defended(:8000) → ризики → IRE →
-    # бенчмарк(P/R/F1/ROC) → звіт baseline → звіт defended → ко-еволюція → метрики.
-    # Проксі :8000 підіймається автоматично (execute_defended/benchmark його потребують).
+    # campaign — a FULL run that fills the ENTIRE dashboard with one command:
+    # generate → baseline attacks(:8001) → defended attacks(:8000) → risks → IRE →
+    # benchmark(P/R/F1/ROC) → baseline report → defended report → co-evolution → metrics.
+    # The :8000 proxy is started automatically (execute_defended/benchmark need it).
     "campaign": ["generate", "execute_baseline", "execute_defended",
                  "score", "ire", "benchmark",
                  "sec_fpr", "sec_heldout", "sec_inject", "sec_flood", "redetection",
                  "defense_report_baseline", "defense_report_defended",
                  "coevolution_defended", "attack_flow", "metrics", "manifest"],
-    # security — лише тести стійкості самої ЦІС (потребують проксі :8000)
+    # security — only resilience tests of the DIS itself (need the :8000 proxy)
     "security": ["sec_fpr", "sec_heldout", "sec_inject", "sec_flood",
                  "redetection", "metrics"],
-    # coevolve — ко-еволюційний цикл: мутуємо атаки під блокування ЦІС (за DEFENDED-
-    # результатами → escalate/refine/bypass) → виконуємо через проксі → метрика поколінь.
-    # Передумова: вже є defended-звіти (з попереднього campaign). Потребує проксі :8000.
+    # coevolve — the co-evolution cycle: mutate attacks under DIS blocking (from DEFENDED
+    # results → escalate/refine/bypass) → run through the proxy → the generations metric.
+    # Precondition: defended reports already exist (from a prior campaign). Needs the :8000 proxy.
     "coevolve": ["adapt", "execute_defended", "defense_report_defended",
                  "coevolution_defended", "attack_flow"],
 }
 
 
-# ─── Допоміжне ────────────────────────────────────────────────────────────────
+# ─── Helpers ──────────────────────────────────────────────────────────────────
 
 def _run(label: str, argv: list, env_extra: dict = None) -> int:
     print("\n" + "=" * 78)
@@ -168,20 +168,20 @@ def _url_up(url: str) -> bool:
         urllib.request.urlopen(url, timeout=1)
         return True
     except urllib.error.HTTPError:
-        return True   # сервер відповів (хай навіть 4xx) → працює
+        return True   # the server responded (even a 4xx) → it works
     except Exception:
         return False
 
 
 def start_proxy():
-    """Піднімає immune_proxy :8000 у фоні. Повертає (proc | None, owned: bool).
-    Якщо проксі вже працює — owned=False (не чіпаємо чужий процес)."""
+    """Start immune_proxy :8000 in the background. Returns (proc | None, owned: bool).
+    If the proxy is already running — owned=False (do not touch someone else's process)."""
     if _url_up(PROXY_STATS_URL):
         print("  ℹ️  Проксі вже працює на :8000 — використовую наявний.")
         return None, False
     print("  ▶ Стартую immune_proxy на :8000 (фон)...", flush=True)
     proc = subprocess.Popen([PY, "immune_system/immune_proxy.py"], cwd=str(ROOT))
-    for _ in range(60):   # ~30с
+    for _ in range(60):   # ~30s
         if _url_up(PROXY_STATS_URL):
             print("  ✓ Проксі готовий (:8000).", flush=True)
             return proc, True
@@ -204,11 +204,11 @@ def stop_proxy(proc):
 
 
 def run_steps(steps: list, keep_going: bool, with_defense: bool) -> int:
-    """Виконує впорядкований список кроків. За потреби сам підіймає/гасить проксі."""
+    """Run the ordered list of steps. Starts/stops the proxy itself if needed."""
     need_proxy = with_defense and any(s in DEFENSE_STEPS for s in steps)
     proc, owned = None, False
 
-    # попередження, якщо Helios :8001 не відповідає, а він знадобиться
+    # warn if Helios :8001 is not responding but will be needed
     if any(s in DEFENSE_STEPS or s.startswith("execute") for s in steps) and not _url_up(HELIOS_URL):
         print("  ⚠️  Helios :8001 не відповідає — підніми його перед запуском "
               "(cd ~/helios-server && python manage.py runserver 8001).", file=sys.stderr)
@@ -242,19 +242,19 @@ def run_steps(steps: list, keep_going: bool, with_defense: bool) -> int:
 
 
 def build_steps(args) -> list:
-    """Будує впорядкований список кроків з пресету або гранулярних флагів."""
-    # 1) гранулярні флаги мають пріоритет (clean — лише префікс-модифікатор)
+    """Build the ordered list of steps from a preset or granular flags."""
+    # 1) granular flags take priority (clean — only a prefix modifier)
     flagged = [s for s in ORDER if getattr(args, s)]
     if flagged:
         return (["clean"] + flagged) if args.clean else flagged
-    # 2) інакше — пресет
+    # 2) otherwise — a preset
     preset = args.preset
     if preset == "all":
         steps = list(PRESETS["offense"])
         steps += [s for s in PRESETS["defense"] if s not in steps]
     else:
         steps = list(PRESETS.get(preset, []))
-    # модифікатори offense/all/campaign (clean ігнорується для analyze/defense)
+    # offense/all/campaign modifiers (clean is ignored for analyze/defense)
     if preset in ("offense", "all", "campaign"):
         if args.skip_generate and "generate" in steps:
             steps.remove("generate")
@@ -281,7 +281,7 @@ def main():
     p.add_argument("--skip-generate", action="store_true")
     p.add_argument("--skip-execute", action="store_true")
     p.add_argument("--keep-going", action="store_true")
-    # гранулярні кроки
+    # granular steps
     p.add_argument("--clean", action="store_true")
     p.add_argument("--generate", action="store_true")
     p.add_argument("--execute", action="store_true")
@@ -294,11 +294,11 @@ def main():
     p.add_argument("--coevolution", action="store_true")
     args = p.parse_args()
 
-    # test — окремо (просто pytest)
+    # test — separate (just pytest)
     if args.preset == "test":
         sys.exit(_run("Unit-тести (без серверів)", [PY, "-m", "pytest", "tests/"]))
 
-    # campaign/security/coevolve самі керують проксі (кроки б'ють по :8000)
+    # campaign/security/coevolve manage the proxy themselves (steps hit :8000)
     if args.preset in ("campaign", "security", "coevolve"):
         args.with_defense = True
 

@@ -1,10 +1,10 @@
 """
-Модуль 2: Генератор атак на базі Claude API
-Цифрова імунна система — attack_generator.py
+Module 2: Claude API-based attack generator
+Digital immune system — attack_generator.py
 
-Генерує сценарії STRIDE + MITRE ATT&CK + LINDDUN для двох векторів:
-  - system_attacks   : атаки на платформу Helios
-  - voter_attacks    : атаки на людину-виборця (coercion, phishing, device)
+Generates STRIDE + MITRE ATT&CK + LINDDUN scenarios for two vectors:
+  - system_attacks   : attacks on the Helios platform
+  - voter_attacks    : attacks on the human voter (coercion, phishing, device)
 """
 
 import anthropic
@@ -16,7 +16,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-# Автозавантаження .env
+# Auto-load .env
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from env_loader import load_env
 load_env()
@@ -36,18 +36,18 @@ SCENARIOS_DIR     = str(PROJECT_ROOT / _cfg.get("paths", {}).get("scenarios_dir"
 VOTERS            = _cfg.get("helios", {}).get("voters", {})
 VOTER_UUIDS       = _cfg.get("helios", {}).get("voter_uuids", {})
 
-# Строка с реальными credentials для промптов
+# String with real credentials for the prompts
 _voter_creds_str = "\n".join(
     f"  {login} / {pwd}  (uuid: {VOTER_UUIDS.get(login,'?')})"
     for login, pwd in VOTERS.items()
 ) if VOTERS else "  (credentials not configured)"
 
-# ─── Каталог класів атак ───────────────────────────────────────────────────────
+# ─── Attack class catalog ───────────────────────────────────────────────────────
 
 ATTACK_CATALOG = {
 
     # ══════════════════════════════════════════════════════
-    # ВЕКТОР 1: АТАКИ НА СИСТЕМУ
+    # VECTOR 1: ATTACKS ON THE SYSTEM
     # ══════════════════════════════════════════════════════
 
     "ballot_stuffing": {
@@ -137,7 +137,7 @@ ATTACK_CATALOG = {
     },
 
     # ══════════════════════════════════════════════════════
-    # ВЕКТОР 2: АТАКИ НА ЛЮДИНУ-ВИБОРЦЯ
+    # VECTOR 2: ATTACKS ON THE HUMAN VOTER
     # ══════════════════════════════════════════════════════
 
     "voter_coercion_receipt": {
@@ -389,7 +389,7 @@ ATTACK_CATALOG = {
 }
 
 
-# ─── Системний промпт ──────────────────────────────────────────────────────────
+# ─── System prompt ──────────────────────────────────────────────────────────────
 
 SYSTEM_PROMPT = """You are a security research assistant supporting an academic dissertation on digital immune systems for e-government services.
 
@@ -438,34 +438,34 @@ Helios — Django-додаток з такими ключовими endpoints:
 
 Відповідай ТІЛЬКИ валідним JSON, без markdown, без коментарів."""
 
-# ─── Генерація сценарію ────────────────────────────────────────────────────────
+# ─── Scenario generation ────────────────────────────────────────────────────────
 
 def _sanitize_json(raw: str) -> str:
-    """Чистит типичные LLM-ошибки в JSON перед парсингом."""
-    # Быстрая проверка — может уже валидный
+    """Clean typical LLM errors in JSON before parsing."""
+    # Quick check — it may already be valid
     try:
         json.loads(raw)
         return raw
     except json.JSONDecodeError:
         pass
 
-    # 1. Убираем // комментарии построчно
+    # 1. Strip // comments line by line
     lines = []
     for line in raw.splitlines():
         lines.append(re.sub(r'(?<!:)//.*$', '', line))
     raw = "\n".join(lines)
 
-    # 2. Trailing commas перед } или ]
+    # 2. Trailing commas before } or ]
     raw = re.sub(r',(\s*[}\]])', r'\1', raw)
 
-    # 3. Control characters внутри строковых значений
-    # Заменяем буквальные \n \r \t внутри JSON-строк на escaped версии
+    # 3. Control characters inside string values
+    # Replace literal \n \r \t inside JSON strings with escaped versions
     def fix_control_chars(m):
         s = m.group(0)
         s = s.replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
         return s
 
-    # Находим строковые значения (между кавычками) и чистим control chars
+    # Find string values (between quotes) and clean control chars
     raw = re.sub(r'"(?:[^"\\]|\\.)*"', fix_control_chars, raw)
 
     return raw.strip()
@@ -508,7 +508,7 @@ def generate_attack_scenario(attack_class: str, context: dict = None) -> dict:
     attack_info = ATTACK_CATALOG[attack_class]
     context = context or {}
 
-    # Формуємо деталі вектора для промпту
+    # Build the vector details for the prompt
     voter_section = ""
     if attack_info["vector"] == "voter":
         voter_section = f"""
@@ -631,7 +631,7 @@ Election UUID: {context.get('election_uuid', ELECTION_UUID)}
             text = text.strip()  # спочатку strip, потім префікс
             if text.startswith("json"):
                 text = text[4:].strip()
-        # Залишковий "json" на початку після strip
+        # Leftover "json" at the start after strip
         if text.lstrip().startswith("json") and not text.lstrip().startswith("{"):
             text = text.lstrip()[4:].strip()
         return text
@@ -655,10 +655,10 @@ Election UUID: {context.get('election_uuid', ELECTION_UUID)}
     if not looks_like_json(raw):
         raise ValueError(f"Claude не повернув JSON після retry. stop_reason={stop_reason}, raw={raw[:100]!r}")
 
-    # Сначала sanitize (trailing commas, comments) — всегда
+    # First sanitize (trailing commas, comments) — always
     raw = _sanitize_json(raw)
 
-    # Если обрезан — пробуем восстановить структуру
+    # If truncated — try to recover the structure
     if stop_reason == "max_tokens":
         print(f"[!] Відповідь обрізана (stop_reason=max_tokens, len={len(raw)}). Відновлюю JSON...")
         raw = _repair_truncated_json(raw)

@@ -1,14 +1,14 @@
 """
-Модуль 3: Red Team Agent v2
-Цифрова імунна система — red_team_agent.py
+Module 3: Red Team Agent v2
+Digital immune system — red_team_agent.py
 
-Виконує JSON-сценарії атак реальними HTTP-запитами до Helios.
-Ключові покращення v2:
-  - Контекст між кроками: context_extract витягує дані з відповідей
-  - LOCAL/NETWORK-кроки: чесна оцінка (не завжди success=True)
-  - Success визначається по endpoint-специфіці, не тільки status_code
-  - Voter-vector: логує вплив на людину окремо
-  - Детальний аналіз відповідей Helios (JSON + HTML parsing)
+Executes JSON attack scenarios with real HTTP requests to Helios.
+Key v2 improvements:
+  - Context between steps: context_extract pulls data from responses
+  - LOCAL/NETWORK steps: honest evaluation (not always success=True)
+  - Success is determined by endpoint specifics, not only status_code
+  - Voter-vector: logs the human impact separately
+  - Detailed analysis of Helios responses (JSON + HTML parsing)
 """
 
 import json
@@ -33,9 +33,9 @@ PROJECT_ROOT = Path(_cfg.get("_root", Path(__file__).resolve().parent))
 
 HELIOS_BASE_URL = os.environ.get("HELIOS_BASE_URL",
     _cfg.get("helios", {}).get("base_url", "http://localhost:8001"))
-# Ізоляція звітів за режимом прогону: baseline (проти сирого Helios) vs defended
-# (через ЦІС-проксі). Дозволяє тримати «без захисту» та «із захистом» окремо й
-# порівнювати. Порожній subdir → стара поведінка (reports/attacks/).
+# Report isolation by run mode: baseline (against raw Helios) vs defended
+# (through the DIS proxy). Lets us keep "without defense" and "with defense"
+# separate and compare. Empty subdir → old behavior (reports/attacks/).
 REPORT_SUBDIR = os.environ.get("REDTEAM_REPORT_SUBDIR", "")
 DEFENDED_RUN  = os.environ.get("REDTEAM_DEFENDED", "").lower() in ("1", "true", "yes")
 ELECTION_UUID   = _cfg.get("helios", {}).get("election_uuid", "07712c60-5b5b-4671-9ede-035cda82736a")
@@ -59,14 +59,14 @@ logging.basicConfig(
 log = logging.getLogger("red_team")
 
 
-# ─── Структурований лог ────────────────────────────────────────────────────────
+# ─── Structured log ─────────────────────────────────────────────────────────────
 
 MAX_LOG_BYTES = 50 * 1024 * 1024   # ротація attack_events.jsonl за розміром
 LOG_BACKUPS   = 5
 
 
 def _rotate_if_needed(path: Path):
-    """Ротує журнал за розміром (file → file.1 → … → file.N) проти необмеженого росту."""
+    """Rotate the log by size (file → file.1 → … → file.N) against unbounded growth."""
     try:
         if not (path.exists() and path.stat().st_size >= MAX_LOG_BYTES):
             return
@@ -96,12 +96,12 @@ def log_event(event_type: str, details: dict, severity: str = "INFO"):
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
-# ─── Витягування контексту з відповіді ────────────────────────────────────────
+# ─── Extracting context from a response ───────────────────────────────────────
 
 def extract_from_response(resp: requests.Response, extract_spec: dict, context: dict):
     """
-    Витягує значення з відповіді відповідно до context_extract специфікації.
-    Підтримує: json_key, regex, cookie_name, header_name.
+    Extract values from the response according to the context_extract spec.
+    Supports: json_key, regex, cookie_name, header_name.
     """
     if not extract_spec:
         return {}
@@ -109,28 +109,28 @@ def extract_from_response(resp: requests.Response, extract_spec: dict, context: 
     extracted = {}
     text = resp.text
 
-    # Спробуємо розпарсити JSON
+    # Try to parse JSON
     resp_json = None
     try:
         resp_json = resp.json()
     except ValueError:
-        pass   # відповідь не JSON — нормально (HTML/redirect), не помилка
+        pass   # response is not JSON — that's fine (HTML/redirect), not an error
 
     for key, spec in extract_spec.items():
         val = None
 
         if isinstance(spec, str):
             # cookie
-            # Нормалізуємо нестандартні префікси які генерує Claude
+            # Normalize the non-standard prefixes that Claude generates
             # cookie_name: → cookie:
             if spec.startswith("cookie_name:"):
                 spec = "cookie:" + spec[12:]
-            # xpath: → ігноруємо (не підтримується, повертаємо None)
+            # xpath: → ignore (unsupported, return None)
             elif spec.startswith(("xpath:", "static:", "local_var:", "local_array:",
                                    "smtp", "file:", "stdout:", "smtp_", "browser ",
                                    "DOM:", "window.", "http_status:")):
                 val = None
-            # JSONPath $[*].field → конвертуємо в json_key
+            # JSONPath $[*].field → convert to json_key
             elif spec.startswith("$"):
                 clean = re.sub(r'[\$\[\]\*]', '', spec).strip(". ")
                 spec = "json_key:" + clean
@@ -157,7 +157,7 @@ def extract_from_response(resp: requests.Response, extract_spec: dict, context: 
                 except re.error:
                     val = None
 
-            # json / json_key — підтримуємо обидва префікси
+            # json / json_key — support both prefixes
             elif spec.startswith(("json:", "json_key:")) and resp_json:
                 raw_path = spec.split(":", 1)[1].strip()
                 clean_path = re.sub(r'\[.*?\]', '', raw_path).strip(" .")
@@ -174,7 +174,7 @@ def extract_from_response(resp: requests.Response, extract_spec: dict, context: 
                         break
                 val = str(cur) if cur is not None else None
 
-            # simple regex fallback — тільки якщо val ще не встановлено
+            # simple regex fallback — only if val is not set yet
             elif val is None and spec and not spec.startswith(
                     ("cookie:", "header:", "regex:", "json:", "json_key:")):
                 try:
@@ -188,20 +188,20 @@ def extract_from_response(resp: requests.Response, extract_spec: dict, context: 
             extracted[key] = val
             context[key] = val
 
-    # Автоматично: CSRF token
+    # Automatic: CSRF token
     if "csrf_token" not in context:
         m = re.search(r'csrfmiddlewaretoken["\s]+value=["\']([^"\']+)', text)
         if m:
             context["csrf_token"] = m.group(1)
             extracted["csrf_token"] = m.group(1)
 
-    # Автоматично: sessionid
+    # Automatic: sessionid
     sid = resp.cookies.get("sessionid")
     if sid:
         context["session_id"] = sid
         extracted["session_id"] = sid
 
-    # Автоматично: перший voter UUID з JSON-відповіді
+    # Automatic: the first voter UUID from the JSON response
     if resp_json and isinstance(resp_json, list) and len(resp_json) > 0:
         first = resp_json[0]
         if isinstance(first, dict):
@@ -210,7 +210,7 @@ def extract_from_response(resp: requests.Response, extract_spec: dict, context: 
                     context.setdefault("voter_uuid", str(first[field]))
                     extracted.setdefault("voter_uuid", str(first[field]))
                     break
-            # Автоматично: vote_hash і cast_at з ballot board
+            # Automatic: vote_hash and cast_at from the ballot board
             if "vote_hash" in first:
                 context.setdefault("vote_hash", str(first["vote_hash"]))
                 extracted.setdefault("vote_hash", str(first["vote_hash"]))
@@ -221,7 +221,7 @@ def extract_from_response(resp: requests.Response, extract_spec: dict, context: 
     return extracted
 
 
-# ─── Підстановка контексту в рядки ────────────────────────────────────────────
+# ─── Substituting context into strings ────────────────────────────────────────
 
 def interpolate(value, context: dict):
     if not isinstance(value, str):
@@ -242,7 +242,7 @@ def interpolate_dict(d, context: dict):
     return d
 
 
-# ─── Оцінка успіху кроку ──────────────────────────────────────────────────────
+# ─── Step success evaluation ──────────────────────────────────────────────────
 
 def evaluate_step_success(
     method: str,
@@ -253,14 +253,14 @@ def evaluate_step_success(
     extracted: dict,
 ) -> tuple[bool, str]:
     """
-    Повертає (success: bool, reason: str).
-    Логіка суворіша ніж 'status in [200,302]'.
+    Returns (success: bool, reason: str).
+    Logic stricter than 'status in [200,302]'.
     """
-    # LOCAL / NETWORK кроки — оцінюємо по extracted або позначаємо як SIMULATED
+    # LOCAL / NETWORK steps — evaluate by extracted or mark as SIMULATED
     if method in ("LOCAL", "NETWORK"):
         has_artifacts = len(extracted) > 0
         reason = "SIMULATED — artifacts extracted" if has_artifacts else "SIMULATED — no artifacts (conceptual step)"
-        return True, reason  # LOCAL кроки завжди проходять як симуляція — але позначаємо
+        return True, reason  # LOCAL steps always pass as a simulation — but we mark it
 
     if status_code is None:
         return False, "no response (connection error)"
@@ -277,13 +277,13 @@ def evaluate_step_success(
     if status_code == 404:
         return False, "404 Not Found"
 
-    # /cast з MultiValueDictKeyError — реальна помилка Helios при відсутності encrypted_vote
+    # /cast with MultiValueDictKeyError — a real Helios error when encrypted_vote is missing
     if "MultiValueDictKeyError" in response_text:
         return False, "Helios: missing encrypted_vote field in POST body"
 
-    # Успішна відповідь
+    # Successful response
     if status_code in (200, 201, 302):
-        # Перевіряємо чи отримали корисний контент
+        # Check whether we got useful content
         if status_code == 200 and len(response_text.strip()) < 10:
             return False, "200 but empty response"
         return True, f"HTTP {status_code} OK"
@@ -291,7 +291,7 @@ def evaluate_step_success(
     return False, f"HTTP {status_code} — unexpected"
 
 
-# ─── Виконання одного кроку ───────────────────────────────────────────────────
+# ─── Executing a single step ──────────────────────────────────────────────────
 
 def execute_step(session: requests.Session, step: dict, context: dict) -> dict:
     method = (step.get("method") or "GET").upper()
@@ -303,7 +303,7 @@ def execute_step(session: requests.Session, step: dict, context: dict) -> dict:
     extract_spec = step.get("context_extract", {}) or {}
     attacker_note = step.get("attacker_note", "")
 
-    # Підставляємо контекст в endpoint і payload
+    # Substitute context into the endpoint and payload
     if endpoint:
         endpoint = interpolate(endpoint, context)
     payload = interpolate_dict(payload, context)
@@ -325,10 +325,10 @@ def execute_step(session: requests.Session, step: dict, context: dict) -> dict:
         "error": None,
     }
 
-    # LOCAL / NETWORK кроки не роблять HTTP
+    # LOCAL / NETWORK steps do not make HTTP requests
     if method in ("LOCAL", "NETWORK") or not endpoint:
         extracted = {}
-        # Якщо є payload з артефактами — логуємо їх
+        # If there is a payload with artifacts — log them
         if payload:
             result["response_preview"] = f"[{method}] Artifacts: {json.dumps(payload, ensure_ascii=False)[:200]}"
         result["success"], result["success_reason"] = evaluate_step_success(
@@ -347,7 +347,7 @@ def execute_step(session: requests.Session, step: dict, context: dict) -> dict:
         if method == "GET":
             resp = session.get(url, timeout=HTTP_TIMEOUT, allow_redirects=True)
         elif method == "POST":
-            # Додаємо CSRF у form data якщо є
+            # Add CSRF to the form data if present
             if context.get("csrf_token") and "csrfmiddlewaretoken" not in payload:
                 payload["csrfmiddlewaretoken"] = context["csrf_token"]
             resp = session.post(url, data=payload, timeout=HTTP_TIMEOUT,
@@ -378,7 +378,7 @@ def execute_step(session: requests.Session, step: dict, context: dict) -> dict:
     return result
 
 
-# ─── Виконання сценарію ────────────────────────────────────────────────────────
+# ─── Executing a scenario ───────────────────────────────────────────────────────
 
 def execute_scenario(scenario: dict, base_url: str = None) -> dict:
     attack_id = scenario.get("attack_id", "UNKNOWN")
@@ -387,7 +387,7 @@ def execute_scenario(scenario: dict, base_url: str = None) -> dict:
     name = scenario.get("name", "Unknown Attack")
     steps = scenario.get("steps", [])
     complexity = scenario.get("complexity", "?")
-    # адаптивний сценарій має adaptation_mode (escalate/refine/bypass/simulate_only)
+    # an adaptive scenario has adaptation_mode (escalate/refine/bypass/simulate_only)
     adaptation_mode = scenario.get("adaptation_mode")
     is_adaptive = bool(adaptation_mode)
 
@@ -417,10 +417,10 @@ def execute_scenario(scenario: dict, base_url: str = None) -> dict:
     session = requests.Session()
     session.headers.update({"User-Agent": "Mozilla/5.0 (RedTeamAgent/2.0)"})
 
-    # Базовий контекст — підставляється у {плейсхолдери} всіх кроків
+    # Base context — substituted into the {placeholders} of all steps
     voters  = _cfg.get("helios", {}).get("voters", {})
     v_uuids  = _cfg.get("helios", {}).get("voter_uuids", {})
-    # Беремо першого незаголосованого як ціль (voter4/voter5)
+    # Take the first not-yet-voted one as the target (voter4/voter5)
     target_login = list(voters.keys())[3] if len(voters) >= 4 else (list(voters.keys())[0] if voters else "voter1")
     target_pwd   = voters.get(target_login, "")
     target_uuid  = v_uuids.get(target_login, "")
@@ -428,21 +428,21 @@ def execute_scenario(scenario: dict, base_url: str = None) -> dict:
     context = {
         "base_url":       base_url or HELIOS_BASE_URL,
         "election_uuid":  ELECTION_UUID,
-        # Реальні credentials з config — підставляються у payload кроків
+        # Real credentials from config — substituted into step payloads
         "voter_id":       target_login,
         "voter_login_id": target_login,
         "password":       target_pwd,
         "voter_password": target_pwd,
         "voter_uuid":     target_uuid,
-        # Усі виборці окремо
+        # All voters separately
         **{f"voter{i+1}_login": login for i, login in enumerate(voters.keys())},
         **{f"voter{i+1}_password": pwd   for i, pwd   in enumerate(voters.values())},
         **{f"voter{i+1}_uuid":    uid    for i, uid    in enumerate(v_uuids.values())},
     }
 
     execution_log = []
-    steps_real_success = 0  # реальні HTTP успіхи
-    steps_simulated   = 0  # LOCAL/NETWORK кроки
+    steps_real_success = 0  # real HTTP successes
+    steps_simulated   = 0  # LOCAL/NETWORK steps
     steps_failed      = 0
 
     for step in steps:
@@ -462,7 +462,7 @@ def execute_scenario(scenario: dict, base_url: str = None) -> dict:
 
         result = execute_step(session, step, context)
 
-        # Вивід результату
+        # Print the result
         if result["is_simulated"]:
             print(f"       ~ SIMULATED: {result['success_reason']}")
             steps_simulated += 1
@@ -497,20 +497,20 @@ def execute_scenario(scenario: dict, base_url: str = None) -> dict:
 
         time.sleep(STEP_DELAY)
 
-    # ─── Підрахунок результату ─────────────────────────────────────────────────
+    # ─── Result computation ─────────────────────────────────────────────────────
 
-    # 1. Базовий http_success_rate (тільки реальні HTTP-кроки)
+    # 1. Base http_success_rate (only real HTTP steps)
     real_steps = len(steps) - steps_simulated
     if real_steps > 0:
         http_success_rate = steps_real_success / real_steps * 100
     else:
         http_success_rate = 0.0
 
-    # 2. Фазово-зважений success rate
-    # Критичні фази важать більше — саме вони визначають чи атака реально спрацювала
+    # 2. Phase-weighted success rate
+    # Critical phases weigh more — they determine whether the attack really worked
     PHASE_WEIGHTS = {
         "Reconnaissance": 0.3,
-        "Weaponization":  0.0,   # завжди симуляція — не рахуємо
+        "Weaponization":  0.0,   # always a simulation — not counted
         "Delivery":       0.5,
         "Exploitation":   2.0,
         "Installation":   1.5,
@@ -538,7 +538,7 @@ def execute_scenario(scenario: dict, base_url: str = None) -> dict:
         if r.get("is_simulated"):
             if phase in CRITICAL:
                 critical_simulated += 1
-            # симульовані не додають до weighted score
+            # simulated ones do not add to the weighted score
         else:
             weighted_den += w
             if r["success"]:
@@ -551,19 +551,19 @@ def execute_scenario(scenario: dict, base_url: str = None) -> dict:
 
     weighted_success_rate = (weighted_num / weighted_den * 100) if weighted_den > 0 else 0.0
 
-    # 3. Executability — яка частка критичних кроків була реальним HTTP (не симуляцією)
+    # 3. Executability — what share of critical steps was real HTTP (not simulation)
     critical_total = critical_real_ok + critical_real_fail + critical_simulated
     if critical_total > 0:
         critical_executability = (critical_real_ok + critical_real_fail) / critical_total * 100
     else:
         critical_executability = 0.0
 
-    # 4. Verdict — чесна оцінка
+    # 4. Verdict — an honest assessment
     if critical_total == 0:
-        # немає критичних кроків взагалі
+        # no critical steps at all
         verdict = "RECON_ONLY"
     elif critical_simulated == critical_total:
-        # всі критичні кроки симульовані
+        # all critical steps simulated
         verdict = "CONCEPTUAL"
     elif critical_real_ok == 0 and critical_real_fail > 0:
         verdict = "BLOCKED"
@@ -574,7 +574,7 @@ def execute_scenario(scenario: dict, base_url: str = None) -> dict:
     else:
         verdict = "BLOCKED"
 
-    # Зворотна сумісність
+    # Backward compatibility
     attack_successful = verdict == "EXECUTED"
 
     voter_impact = scenario.get("voter_impact", {})
@@ -630,9 +630,9 @@ def execute_scenario(scenario: dict, base_url: str = None) -> dict:
 
     attacks_dir = Path(REPORTS_DIR) / "attacks"
     if REPORT_SUBDIR:
-        attacks_dir = attacks_dir / REPORT_SUBDIR   # baseline/ або defended/
+        attacks_dir = attacks_dir / REPORT_SUBDIR   # baseline/ or defended/
     attacks_dir.mkdir(parents=True, exist_ok=True)
-    # адаптивні репорти позначаємо у назві (_adaptive_report.json), щоб відрізняти
+    # mark adaptive reports in the name (_adaptive_report.json) to distinguish them
     suffix = "_adaptive" if is_adaptive else ""
     report_file = str(attacks_dir / f"{attack_id}{suffix}_report.json")
     with open(report_file, "w", encoding="utf-8") as f:
@@ -667,7 +667,7 @@ def execute_scenario(scenario: dict, base_url: str = None) -> dict:
     return report
 
 
-# ─── Запуск групи сценаріїв ───────────────────────────────────────────────────
+# ─── Running a group of scenarios ─────────────────────────────────────────────
 
 def run_scenarios_from_dir(directory: str) -> list:
     p = Path(directory)
@@ -675,9 +675,9 @@ def run_scenarios_from_dir(directory: str) -> list:
         print(f"[-] Директорія не знайдена: {directory}")
         return []
 
-    # Шукаємо рекурсивно
+    # Search recursively
     files = sorted(p.rglob("*.json"))
-    # Виключаємо тільки звіти
+    # Exclude only reports
     files = [f for f in files if "report" not in f.name]
 
     if not files:
@@ -749,7 +749,7 @@ if __name__ == "__main__":
             print_summary(reports)
 
         elif arg == "adaptive":
-            # Тільки адаптивні сценарії (з усіх векторів)
+            # Only adaptive scenarios (from all vectors)
             adaptive_files = sorted(Path(SCENARIOS_DIR).rglob("*_adaptive.json"))
             if not adaptive_files:
                 print("[-] Адаптивних сценаріїв не знайдено. Спочатку запусти adaptive_generator.py")
@@ -764,7 +764,7 @@ if __name__ == "__main__":
             print_summary(reports)
 
         elif arg in ("voter/adaptive", "system/adaptive"):
-            # Адаптивні сценарії конкретного вектора
+            # Adaptive scenarios of a specific vector
             vec = arg.split("/")[0]
             adaptive_files = sorted((Path(SCENARIOS_DIR) / vec / "adaptive").rglob("*_adaptive.json"))
             if not adaptive_files:
@@ -789,7 +789,7 @@ if __name__ == "__main__":
             execute_scenario(scenario)
 
         else:
-            # Шукаємо по attack_class
+            # Search by attack_class
             matched = None
             for f in Path(SCENARIOS_DIR).rglob("*.json"):
                 if "report" in f.name:

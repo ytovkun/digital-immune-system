@@ -1,7 +1,7 @@
 """
-Unit-тести метрик бенчмарку: ROC-AUC та точки ROC (за threat_score),
-інтервал Вілсона. Чиста математика, без серверів.
-Запуск:  pytest tests/ -v
+Unit tests for benchmark metrics: ROC-AUC and ROC points (by threat_score),
+Wilson interval. Pure math, no servers.
+Run:  pytest tests/ -v
 """
 
 import sys
