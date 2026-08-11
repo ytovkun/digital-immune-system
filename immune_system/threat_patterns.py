@@ -1,33 +1,33 @@
 """
-Модуль: threat_patterns — спільний каталог сигнатур загроз
-Цифрова імунна система — immune_system/threat_patterns.py
+Module: threat_patterns — shared catalog of threat signatures
+Digital immune system — immune_system/threat_patterns.py
 
-Єдине джерело істини для патернів атак, які раніше дублювалися між
-FastReflex (L1) та AIAnalyst (L2). Раніше ті самі токени (union select,
-/etc/passwd, <script>, {{, ${ ...) жили у трьох окремих списках; оновлення
-одного й забування іншого вело до рассинхрону детекції. Тепер усе тут.
+Single source of truth for attack patterns that were previously duplicated
+between FastReflex (L1) and AIAnalyst (L2). Earlier the same tokens (union
+select, /etc/passwd, <script>, {{, ${ ...) lived in three separate lists;
+updating one and forgetting another led to detection drift. Now it is all here.
 
-Патерни розділені за СЕМАНТИКОЮ використання, а не змішані в один список:
+Patterns are split by USAGE SEMANTICS, not mixed into a single list:
 
-  PAYLOAD_CORE             — однозначно шкідливі payload-сигнатури
-                             (SQLi/XSS/traversal/RCE), які легітимний користувач
-                             НІКОЛИ не надсилає. Спільне ядро для L1 і L2.
-  HARD_MALICIOUS_PATTERNS  — контекстно-НЕЗАЛЕЖні загрози. Використовується L2
-                             для рішення про КЕШОВАНІСТЬ вердикту. ВУЗЬКИЙ набір.
-  ANOMALY_PATTERNS         — ШИРШИЙ набір для МАРШРУТИЗАЦІЇ на ШІ (L1 лише
-                             відправляє на аналіз, не блокує сам).
-  INJECTION_MARKERS        — спроби prompt-injection проти самого ШІ-судді.
+  PAYLOAD_CORE             — unambiguously malicious payload signatures
+                             (SQLi/XSS/traversal/RCE) that a legitimate user
+                             NEVER sends. Shared core for L1 and L2.
+  HARD_MALICIOUS_PATTERNS  — context-INDEPENDENT threats. Used by L2 to decide
+                             whether a verdict is CACHEABLE. NARROW set.
+  ANOMALY_PATTERNS         — BROADER set for ROUTING to the AI (L1 only sends
+                             it for analysis, does not block on its own).
+  INJECTION_MARKERS        — prompt-injection attempts against the AI judge itself.
 
-ВАЖЛИВО — чому HARD і ANOMALY НЕ однакові:
-  HARD має лишатися ВУЗЬКИМ. Широкі токени (';', \"'\", '--') НЕ можна додавати
-  у HARD, бо вердикт BLOCK на /cast з таким токеном став би кешованим під
-  загальним підписом /cast і отруїв би наступний ЛЕГІТИМНИЙ голос (false
-  positive — позбавлення виборця голосу). Тому широкі токени живуть лише в
-  ANOMALY (де хибне спрацювання означає тільки зайвий ШІ-аналіз, не блок).
+IMPORTANT — why HARD and ANOMALY are NOT the same:
+  HARD must stay NARROW. Broad tokens (';', \"'\", '--') must NOT be added to
+  HARD, because a BLOCK verdict on /cast with such a token would be cached under
+  the generic /cast signature and poison the next LEGITIMATE vote (false
+  positive — disenfranchising a voter). So broad tokens live only in ANOMALY
+  (where a false trigger means only an extra AI analysis, not a block).
 """
 
-# ─── Однозначно шкідливе ядро (спільне для L1 та L2) ──────────────────────────
-# Ці токени легітимний трафік не містить за жодних обставин.
+# ─── Unambiguously malicious core (shared by L1 and L2) ───────────────────────
+# Legitimate traffic never contains these tokens under any circumstances.
 PAYLOAD_CORE = [
     "/etc/passwd",
     "union select", "union+select",
@@ -38,25 +38,25 @@ PAYLOAD_CORE = [
     "0x", "%27",
 ]
 
-# ─── L2: контекстно-незалежні загрози (рішення про кешованість вердикту) ──────
-# ВУЗЬКИЙ набір — лише те, що неможливо сплутати з легітимним трафіком.
+# ─── L2: context-independent threats (decide cacheability of a verdict) ───────
+# NARROW set — only what cannot be confused with legitimate traffic.
 _HARD_EXTRA = ["..", "%2e%2e", "' or '", "</script", "/devlogin/login"]
 HARD_MALICIOUS_PATTERNS = PAYLOAD_CORE + _HARD_EXTRA
 
-# ─── L1: ширший набір для маршрутизації підозрілого на ШІ-аналіз ──────────────
-# Тут можна тримати широкі токени — хибне спрацювання = лише зайвий аналіз ШІ.
+# ─── L1: broader set for routing suspicious requests to AI analysis ───────────
+# Broad tokens are fine here — a false trigger = only an extra AI analysis.
 _ANOMALY_EXTRA = ["'", '"', "</", " or '", "--", ";", "%3c",
-                  # XSS-обробники подій / js-URI (щоб точно дійшли до ШІ)
+                  # XSS event handlers / js-URI (so they surely reach the AI)
                   "onerror=", "onload=", "onmouseover=", "javascript:", "<img", "<iframe"]
 ANOMALY_PATTERNS = PAYLOAD_CORE + _ANOMALY_EXTRA
 
-# ─── Маркери path-traversal (перевіряються окремою гілкою L1) ─────────────────
+# ─── Path-traversal markers (checked by a separate L1 branch) ─────────────────
 PATH_TRAVERSAL_MARKERS = ["..", "%2e%2e", "%2f%2f"]
 
-# ─── L1 детермінований БЛОК: однозначні payload-токени (0мс, без ШІ) ──────────
-# Легітимний трафік їх НІКОЛИ не містить → прямий L1-блок безпечний (FP=0).
-# Свідомо БЕЗ широких '0x','%27','<img','onerror=' — вони бувають у легіт-значеннях
-# (hex, апостроф у прізвищі, html-фрагмент у тексті) → ті йдуть на ШІ-аналіз.
+# ─── L1 deterministic BLOCK: unambiguous payload tokens (0ms, no AI) ──────────
+# Legitimate traffic NEVER contains them → a direct L1 block is safe (FP=0).
+# Deliberately WITHOUT broad '0x','%27','<img','onerror=' — they occur in legit
+# values (hex, apostrophe in a surname, html fragment in text) → those go to AI.
 L1_HARD_BLOCK = {
     "/etc/passwd":   "path_traversal",
     "union select":  "sql_injection", "union+select": "sql_injection",
@@ -70,19 +70,20 @@ L1_HARD_BLOCK = {
 
 
 def l1_block_match(low_text: str):
-    """Повертає (token, attack_class) для ОДНОЗНАЧНОГО payload, або (None, None)."""
+    """Return (token, attack_class) for an UNAMBIGUOUS payload, or (None, None)."""
     for tok, ac in L1_HARD_BLOCK.items():
         if tok in low_text:
             return tok, ac
     return None, None
 
 
-# ─── Бэкстоп тіла/шляху ПІСЛЯ ШІ (детермінований override пропуску) ────────────
-# Якщо ШІ (L2) сказав ALLOW, але у шляху/ТІЛІ є ОДНОЗНАЧНИЙ payload — форс-BLOCK:
-# ШІ не можна обманути (prompt-injection) у бік пропуску явного payload, а L1
-# матчить лише path і не бачить payload у ТІЛІ POST.
-# ВУЗЬКИЙ, FP-safe для вільного тексту: свідомо БЕЗ '..','%2e%2e','%27','0x'
-# (бувають у легіт-тексті — '...', hex, апостроф — або є суто URL-поняттями).
+# ─── Body/path backstop AFTER the AI (deterministic override of a pass) ───────
+# If the AI (L2) said ALLOW but the path/BODY contains an UNAMBIGUOUS payload —
+# force-BLOCK: the AI cannot be tricked (prompt-injection) into passing an
+# explicit payload, and L1 matches the path only and does not see a payload in
+# the POST BODY.
+# NARROW, FP-safe for free text: deliberately WITHOUT '..','%2e%2e','%27','0x'
+# (they occur in legit text — '...', hex, apostrophe — or are purely URL notions).
 BACKSTOP_PAYLOADS = [
     "/etc/passwd",
     "union select", "union+select",
@@ -95,23 +96,23 @@ BACKSTOP_PAYLOADS = [
 
 
 def hard_payload_present(path: str, body: str = "") -> bool:
-    """Чи містить шлях АБО тіло однозначно шкідливий payload (BACKSTOP-набір)."""
+    """Whether the path OR body contains an unambiguously malicious payload (BACKSTOP set)."""
     blob = (str(path) + " " + (body or ""))[:8000].lower()
     return any(p in blob for p in BACKSTOP_PAYLOADS)
 
 
 def classify_hard_payload(path: str, body: str = ""):
-    """attack_class для знайденого hard-payload (через L1-каталог), або
-    'payload_injection' якщо токен у BACKSTOP, але поза L1_HARD_BLOCK. None — чисто."""
+    """attack_class for a found hard-payload (via the L1 catalog), or
+    'payload_injection' if the token is in BACKSTOP but outside L1_HARD_BLOCK. None — clean."""
     blob = (str(path) + " " + (body or ""))[:8000].lower()
     tok, ac = l1_block_match(blob)
     if tok:
         return ac
     return "payload_injection" if any(p in blob for p in BACKSTOP_PAYLOADS) else None
 
-# ─── Маркери спроби prompt-injection проти ШІ-судді ───────────────────────────
-# Наявність їх у запиті — САМА ПО СОБІ ознака атаки (легітимний бюлетень
-# ніколи не містить «ignore instructions»).
+# ─── Markers of a prompt-injection attempt against the AI judge ───────────────
+# Their presence in a request is ITSELF a sign of attack (a legitimate ballot
+# never contains "ignore instructions").
 INJECTION_MARKERS = [
     "ignore previous", "ignore all", "disregard", "forget previous",
     "you are now", "new instructions", "system:", "assistant:",
@@ -122,24 +123,24 @@ INJECTION_MARKERS = [
 ]
 
 
-# ─── Хелпери ──────────────────────────────────────────────────────────────────
+# ─── Helpers ──────────────────────────────────────────────────────────────────
 
 def is_path_traversal(path: str) -> bool:
-    """Чи містить шлях ознаки path-traversal (сирий '..' або URL-encoded)."""
+    """Whether the path shows path-traversal signs (raw '..' or URL-encoded)."""
     low = path.lower()
     return (".." in path
             or any(m in low for m in PATH_TRAVERSAL_MARKERS if m != ".."))
 
 
 def anomaly_payload_match(low_text: str) -> bool:
-    """Чи містить (вже lower-cased) текст ознаки injection-payload → L1 INSPECT."""
+    """Whether the (already lower-cased) text contains injection-payload signs → L1 INSPECT."""
     return any(m in low_text for m in ANOMALY_PATTERNS)
 
 
 def is_pattern_malicious(path: str, body: str) -> bool:
     """
-    Чи містить запит контекстно-НЕЗАЛЕЖний шкідливий патерн (L2 → кешувати).
-    Включає payload-сигнатури та спроби prompt-injection.
+    Whether the request contains a context-INDEPENDENT malicious pattern (L2 → cache).
+    Includes payload signatures and prompt-injection attempts.
     """
     blob = (path + " " + (body or ""))[:2000].lower()
     if any(p in blob for p in HARD_MALICIOUS_PATTERNS):
@@ -150,7 +151,7 @@ def is_pattern_malicious(path: str, body: str) -> bool:
 
 
 def detect_injection(text: str) -> bool:
-    """Чи містить текст маркери спроби prompt-injection."""
+    """Whether the text contains prompt-injection attempt markers."""
     if not text:
         return False
     low = str(text).lower()

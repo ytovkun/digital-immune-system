@@ -1,17 +1,17 @@
 """
-Модуль: FastReflex — Уровень 1 цифрової імунної системи
-Цифрова імунна система — immune_system/fast_reflex.py
+Module: FastReflex — Layer 1 of the digital immune system
+Digital immune system — immune_system/fast_reflex.py
 
-Швидкий рефлекторний шар (аналог вродженого імунітету).
-Приймає рішення за ~1ms на основі:
-  - сигнатур чутливих endpoint + патернів
-  - rate-вікон (ковзне вікно запитів по IP)
-  - concurrency-детектора (одночасні POST /cast = race condition)
+Fast reflex layer (analogue of innate immunity).
+Makes a decision in ~1ms based on:
+  - signatures of sensitive endpoints + patterns
+  - rate windows (sliding window of requests per IP)
+  - concurrency detector (simultaneous POST /cast = race condition)
 
-Повертає вердикт: ALLOW / BLOCK / INSPECT
-  ALLOW   — явно безпечно, пропустити
-  BLOCK   — явна атака, дропнути миттєво (403)
-  INSPECT — підозріло, але неясно → передати на Уровень 2 (ШІ-аналітик)
+Returns a verdict: ALLOW / BLOCK / INSPECT
+  ALLOW   — clearly safe, pass through
+  BLOCK   — clear attack, drop instantly (403)
+  INSPECT — suspicious but unclear → hand off to Layer 2 (AI analyst)
 """
 
 import time
@@ -21,60 +21,60 @@ from collections import defaultdict, deque, OrderedDict
 from threat_patterns import is_path_traversal, anomaly_payload_match, l1_block_match
 
 
-# ─── Конфігурація детекції ────────────────────────────────────────────────────
+# ─── Detection configuration ──────────────────────────────────────────────────
 
-# Чутливі endpoint, де можливі атаки
+# Sensitive endpoints where attacks are possible
 SENSITIVE_PATTERNS = {
     "/auth/devlogin/login":   "impersonation",
     "/upload-decryption":     "csrf_trustee_takeover",
     "/cast":                  "ballot_stuffing",
     "/password_voter_login":  "voter_suppression_targeted",
     "/auth/password/login":   "voter_phishing_credential",
-    # критичні адмін-операції життєвого циклу виборів → завжди на ШІ-аналіз
+    # critical admin operations of the election lifecycle → always to AI analysis
     "/encrypt_tally":         "tally_manipulation",
     "/freeze":                "manipulation",
     "/combine_decryptions":   "tally_manipulation",
 }
 
-# Ліміти rate (запитів за вікно)
-RATE_WINDOW_SEC = 10.0          # розмір ковзного вікна
+# Rate limits (requests per window)
+RATE_WINDOW_SEC = 10.0          # sliding window size
 RATE_LIMITS = {
-    "/cast":                 8,   # >8 cast за 10с = флуд/race
-    "/auth/password/login":  10,  # >10 логінів за 10с = brute-force/suppression
+    "/cast":                 8,   # >8 casts per 10s = flood/race
+    "/auth/password/login":  10,  # >10 logins per 10s = brute-force/suppression
     "/password_voter_login": 10,
-    "/voters/":              15,  # >15 запитів списку = harvest (phishing recon)
-    "/ballots/":             25,  # >25 за 10с = масовий збір бюлетенів (timing-деанон recon)
-    "_default":              60,  # загальний ліміт на IP
+    "/voters/":              15,  # >15 list requests = harvest (phishing recon)
+    "/ballots/":             25,  # >25 per 10s = mass ballot collection (timing-deanon recon)
+    "_default":              60,  # overall per-IP limit
 }
 
-# Admin-only операції підрахунку: легітимний ВИБОРЕЦЬ їх не викликає → детермінований
-# L1-блок (а не «монетка ШІ»). ШІ лишається для голосу/логіну/поведінки виборця.
+# Admin-only tally operations: a legitimate VOTER never calls them → deterministic
+# L1 block (not an "AI coin flip"). The AI remains for voter vote/login/behavior.
 ADMIN_ONLY_ENDPOINTS = ("/encrypt_tally", "/freeze", "/combine_decryptions")
 
-# Endpoint логіну: rate-ліміт рахується ЛИШЕ для POST (реальні спроби входу).
-# GET цих шляхів — це показ форми (Helios сам редиректить на неї), не атака.
+# Login endpoints: the rate limit is counted ONLY for POST (real login attempts).
+# A GET of these paths shows the form (Helios itself redirects to it), not an attack.
 LOGIN_ENDPOINTS = ("/auth/password/login", "/password_voter_login")
 
-# Concurrency: одночасні POST /cast від однієї сесії
-CONCURRENCY_WINDOW_SEC = 2.0    # «одночасними» вважаємо запити в межах 2с
-CONCURRENCY_THRESHOLD = 3       # ≥3 cast за 2с від однієї сесії = race condition
+# Concurrency: simultaneous POST /cast from a single session
+CONCURRENCY_WINDOW_SEC = 2.0    # requests within 2s are treated as "simultaneous"
+CONCURRENCY_THRESHOLD = 3       # ≥3 casts per 2s from one session = race condition
 
-MAX_TRACKED_KEYS = 20000        # межа словників вікон (захист від memory-DoS)
-EVICT_EVERY = 2000              # періодичність прибирання мертвих ключів
+MAX_TRACKED_KEYS = 20000        # window-dict cap (memory-DoS protection)
+EVICT_EVERY = 2000              # how often to sweep dead keys
 
 
 class FastReflex:
-    """Швидкий рефлекторний шар — рішення за мілісекунди, потокобезпечний."""
+    """Fast reflex layer — decides in milliseconds, thread-safe."""
 
     def __init__(self):
         self._lock = threading.Lock()
-        # ковзні вікна часових міток: key=(ip, endpoint) → deque[timestamps]
+        # sliding timestamp windows: key=(ip, endpoint) → deque[timestamps]
         self._rate_windows = defaultdict(deque)
         # concurrency: key=(session, "/cast") → deque[timestamps]
         self._cast_windows = defaultdict(deque)
         self._req_since_evict = 0
-        # Вивчені сигнатури: ШІ (L2) синтезує їх із заблокованих НОВИХ патернів,
-        # і L1 блокує повторні миттєво (0мс). Аналог adaptive→innate immunity.
+        # Learned signatures: the AI (L2) synthesizes them from blocked NEW patterns,
+        # and L1 blocks repeats instantly (0ms). Analogue of adaptive→innate immunity.
         self._learned = OrderedDict()       # sig(lower) → attack_class
         self._learned_hits = 0
 
@@ -82,10 +82,10 @@ class FastReflex:
 
     def add_learned_signature(self, sig: str, attack_class: str) -> bool:
         """
-        Додає синтезовану ШІ сигнатуру до L1 (потокобезпечно). Приймається лише
-        однозначний контекстно-незалежний токен (ШІ викликається тільки коли
-        _is_pattern_malicious=True), тож прямий L1-блок настільки ж безпечний,
-        як і наявні hard-malicious патерни. Повертає True, якщо додано.
+        Add an AI-synthesized signature to L1 (thread-safe). Only an unambiguous
+        context-independent token is accepted (the AI is invoked only when
+        _is_pattern_malicious=True), so a direct L1 block is exactly as safe as
+        the existing hard-malicious patterns. Returns True if added.
         """
         if not sig:
             return False
@@ -101,25 +101,25 @@ class FastReflex:
                 self._learned.popitem(last=False)
         return True
 
-    # ─── Допоміжне ────────────────────────────────────────────────────────────
+    # ─── Helpers ──────────────────────────────────────────────────────────────
 
     def _evict_dead(self, now: float):
-        """Прибирає порожні/застарілі ключі вікон (захист від memory-DoS).
-        Викликається періодично під локом."""
+        """Remove empty/stale window keys (memory-DoS protection).
+        Called periodically under the lock."""
         for store, window in ((self._rate_windows, RATE_WINDOW_SEC),
                               (self._cast_windows, CONCURRENCY_WINDOW_SEC)):
             dead = [k for k, dq in store.items()
                     if not dq or (now - dq[-1]) > window]
             for k in dead:
                 del store[k]
-            # жорстка межа, якщо словник усе ще завеликий
+            # hard cap, if the dict is still too large
             if len(store) > MAX_TRACKED_KEYS:
                 oldest = sorted(store.items(), key=lambda kv: kv[1][-1] if kv[1] else 0)
                 for k, _ in oldest[: len(store) - MAX_TRACKED_KEYS]:
                     del store[k]
 
     def _match_endpoint(self, path: str) -> str:
-        """Повертає сигнатурний patttern, що міститься у path, або ''."""
+        """Return the signature pattern contained in path, or ''."""
         for pat in SENSITIVE_PATTERNS:
             if pat in path:
                 return pat
@@ -129,8 +129,8 @@ class FastReflex:
         for pat in RATE_LIMITS:
             if pat == "_default" or pat not in path:
                 continue
-            # для login-endpoint спеціальний ліміт лише на POST (спроби входу);
-            # GET форми логіну йде по загальному дефолтному ліміту
+            # for a login endpoint the special limit applies only to POST (login
+            # attempts); a GET of the login form goes under the generic default limit
             if pat in LOGIN_ENDPOINTS and method != "POST":
                 continue
             return pat
@@ -142,37 +142,37 @@ class FastReflex:
 
     def _anomaly_signal(self, method: str, path: str):
         """
-        Повертає (action, label, attack_class) або None:
-          action="BLOCK"   — ОДНОЗНАЧНИЙ payload (легіт не шле) → L1 блокує сам (0мс);
-          action="INSPECT" — НЕОДНОЗНАЧНЕ → рішення приймає ШІ (намір/поведінка).
+        Return (action, label, attack_class) or None:
+          action="BLOCK"   — UNAMBIGUOUS payload (legit never sends) → L1 blocks itself (0ms);
+          action="INSPECT" — AMBIGUOUS → the AI decides (intent/behavior).
         """
         low = path.lower()
-        # ── ОДНОЗНАЧНІ payload → детермінований L1-БЛОК (не покладаємось на ШІ) ──
+        # ── UNAMBIGUOUS payload → deterministic L1 BLOCK (do not rely on AI) ──
         if is_path_traversal(path):
             return ("BLOCK", "path_traversal", "path_traversal")
         tok, ac = l1_block_match(low)
         if tok:
             return ("BLOCK", f"hard:{tok}", ac)
-        # ── ВИСОКОРИЗИКОВІ admin/verb → детермінований L1-БЛОК (не «монетка ШІ») ──
-        # Легітимний ВИБОРЕЦЬ цього не робить; admin діє через окремий авторизований
-        # канал, не через цей voter-facing проксі. Тож блокуємо однозначно й стабільно.
+        # ── HIGH-RISK admin/verb → deterministic L1 BLOCK (not an "AI coin flip") ──
+        # A legitimate VOTER does not do this; admin acts through a separate authorized
+        # channel, not this voter-facing proxy. So we block unambiguously and stably.
         if method in ("DELETE", "PUT", "PATCH", "TRACE") and "/helios/" in low:
             return ("BLOCK", f"dangerous_verb:{method}", "dangerous_verb")
         admin_paths = ["/delete", "/archive", "/admins", "/unfreeze", "/copy",
                        "/keygenerator", "/set_reg"]
         if method == "POST" and any(a in low for a in admin_paths):
             return ("BLOCK", "admin_lifecycle", "admin_lifecycle")
-        # ── НЕОДНОЗНАЧНІ маркери (бувають у легіт) → ШІ вирішує ────────────────
+        # ── AMBIGUOUS markers (occur in legit) → the AI decides ────────────────
         if anomaly_payload_match(low):
             return ("INSPECT", "injection_pattern", None)
         return None
 
-    # ─── Головна оцінка ───────────────────────────────────────────────────────
+    # ─── Main evaluation ──────────────────────────────────────────────────────
 
     def evaluate(self, method: str, path: str, headers: dict,
                  client_ip: str, session_id: str) -> dict:
         """
-        Оцінює один запит. Повертає dict:
+        Evaluate a single request. Returns a dict:
           {verdict, reason, attack_class, signal, latency_ms}
         verdict ∈ {ALLOW, BLOCK, INSPECT}
         """
@@ -182,13 +182,13 @@ class FastReflex:
         verdict, reason, attackClass, signal = "ALLOW", "", None, None
 
         with self._lock:
-            # Періодична евікція мертвих ключів (захист від memory-DoS)
+            # Periodic eviction of dead keys (memory-DoS protection)
             self._req_since_evict += 1
             if self._req_since_evict >= EVICT_EVERY:
                 self._req_since_evict = 0
                 self._evict_dead(now)
 
-            # 1. Concurrency-детектор: race condition на /cast
+            # 1. Concurrency detector: race condition on /cast
             if method == "POST" and "/cast" in path and "cast_confirm" not in path:
                 ckey = (session_id or client_ip, "/cast")
                 dq = self._cast_windows[ckey]
@@ -201,7 +201,7 @@ class FastReflex:
                               f"за {CONCURRENCY_WINDOW_SEC}с від однієї сесії")
                     signal = "concurrency"
 
-            # 2. Rate-вікно (якщо ще не заблоковано)
+            # 2. Rate window (if not already blocked)
             if verdict == "ALLOW":
                 ratePat = self._rate_key_pattern(path, method)
                 limit = RATE_LIMITS[ratePat]
@@ -216,9 +216,9 @@ class FastReflex:
                               f"за {RATE_WINDOW_SEC}с (ліміт {limit})")
                     signal = "rate"
 
-        # 2.5 Вивчені ШІ сигнатури — миттєвий L1-блок повторних нових атак (0мс).
-        # Знімок під локом, потім скан БЕЗ лока (щоб не тримати глобальний лок на
-        # O(N) substring-пошуку при великій кількості вивчених сигнатур).
+        # 2.5 AI-learned signatures — instant L1 block of repeated new attacks (0ms).
+        # Snapshot under the lock, then scan WITHOUT the lock (so we do not hold the
+        # global lock during an O(N) substring search over many learned signatures).
         if verdict == "ALLOW" and self._learned:
             low = path.lower()
             with self._lock:
@@ -232,17 +232,17 @@ class FastReflex:
                               f"(adaptive→innate immunity)")
                     break
 
-        # 3. Сигнатурні евристики (поза локом — лише читання headers)
+        # 3. Signature heuristics (outside the lock — only reads headers)
         if verdict == "ALLOW":
             sigPat = self._match_endpoint(path)
             if sigPat:
-                # devlogin — вхід без пароля, у проді має бути вимкнено
+                # devlogin — login without a password, must be disabled in prod
                 if sigPat == "/auth/devlogin/login" and method == "POST":
                     verdict = "BLOCK"
                     attackClass = "impersonation"
                     reason = "DevLogin POST — автентифікація без пароля (заборонено в проді)"
                     signal = "signature"
-                # CSRF на trustee: зовнішній Referer
+                # CSRF on a trustee: external Referer
                 elif sigPat == "/upload-decryption" and method == "POST":
                     referer = headers.get("Referer", "") or headers.get("referer", "")
                     if referer and "localhost" not in referer and "127.0.0.1" not in referer:
@@ -254,30 +254,30 @@ class FastReflex:
                         verdict = "INSPECT"
                         reason = "Trustee decryption upload — потребує ШІ-аналізу"
                         signal = "sensitive"
-                # Admin-only підрахунок (tally/freeze/combine) → детермінований блок
+                # Admin-only tally (tally/freeze/combine) → deterministic block
                 elif sigPat in ADMIN_ONLY_ENDPOINTS:
                     verdict = "BLOCK"
                     attackClass = SENSITIVE_PATTERNS.get(sigPat, "tally_manipulation")
                     reason = (f"Admin-only операція {sigPat} на voter-facing проксі — "
                               f"детермінований L1-блок (виборець її не викликає)")
                     signal = "admin_only"
-                # Логін (GET форма + POST спроба) → ЛЕГІТИМНО на L1. Реальні атаки
-                # на логін стереже rate-limit (флуд/suppression) та темп-фільтр
-                # (бот recon→login); одиночна спроба виборця — норма (ALLOW, без ШІ,
-                # щоб ШІ не давав хибних блокувань легітимного входу).
+                # Login (GET form + POST attempt) → LEGITIMATE at L1. Real attacks
+                # on login are guarded by the rate limit (flood/suppression) and the
+                # tempo filter (bot recon→login); a single voter attempt is normal
+                # (ALLOW, no AI, so the AI does not falsely block a legitimate login).
                 elif sigPat in LOGIN_ENDPOINTS:
-                    pass   # verdict лишається ALLOW
-                # Інші чутливі endpoint (cast) → на ШІ-аналіз (намір голосу)
+                    pass   # verdict stays ALLOW
+                # Other sensitive endpoints (cast) → to AI analysis (vote intent)
                 else:
                     verdict = "INSPECT"
                     attackClass = SENSITIVE_PATTERNS.get(sigPat)
                     reason = f"Чутливий endpoint {sigPat} — потребує перевірки наміру"
                     signal = "sensitive"
             else:
-                # Не каталогізований endpoint: перевіряємо ГЕНЕРИЧНІ аномалії.
-                # FastReflex лише МАРШРУТИЗУЄ підозріле на ШІ (не блокує сам) —
-                # фінальне рішення приймає ШІ своїм міркуванням. Це ловить НОВІ
-                # атаки, яких немає ні в сигнатурах, ні в каталозі.
+                # Non-cataloged endpoint: check GENERIC anomalies.
+                # FastReflex only ROUTES the suspicious to the AI (does not block
+                # itself) — the final decision is the AI's reasoning. This catches
+                # NEW attacks that are in neither the signatures nor the catalog.
                 anomaly = self._anomaly_signal(method, path)
                 if anomaly:
                     action, label, ac = anomaly
@@ -302,7 +302,7 @@ class FastReflex:
         }
 
     def cast_count(self, session_key: str) -> int:
-        """Потокобезпечна кількість недавніх POST /cast для сесії (для контексту ШІ)."""
+        """Thread-safe count of recent POST /cast for a session (for AI context)."""
         with self._lock:
             dq = self._cast_windows.get((session_key, "/cast"))
             return len(dq) if dq else 0

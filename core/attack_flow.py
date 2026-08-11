@@ -1,14 +1,15 @@
 """
 Attack Flow / Kill Chain builder.
-Цифрова імунна система — core/attack_flow.py
+Digital immune system — core/attack_flow.py
 
-Будує attack_flow.json з defended-звітів red_team: для КОЖНОЇ атаки — послідовність
-кроків kill chain (Reconnaissance → Weaponization → Delivery → Exploitation → Action)
-із вердиктом захисту на кожному кроці (blocked / passed / simulated). Це джерело для
-візуалізації kill chain у дашборді (розділи 3.1, 4.5, 5.4).
+Builds attack_flow.json from red_team defended reports: for EACH attack — the
+sequence of kill-chain steps (Reconnaissance → Weaponization → Delivery →
+Exploitation → Action) with a defense verdict on each step (blocked / passed /
+simulated). This is the source for the kill-chain visualization in the dashboard
+(sections 3.1, 4.5, 5.4).
 
-Запуск:  python core/attack_flow.py [--scope defended|baseline]
-Вихід:   reports/killchain/attack_flow.json
+Run:  python core/attack_flow.py [--scope defended|baseline]
+Out:  reports/killchain/attack_flow.json
 """
 
 import re
@@ -27,26 +28,26 @@ ROOT = Path(_cfg.get("_root", Path(__file__).resolve().parent.parent))
 REPORTS = ROOT / _cfg.get("paths", {}).get("reports_dir", "reports")
 
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
-# ALL-CAPS плейсхолдери, що не підставилися у сценарії (TRUSTEE_UUID, VOTER_UUID…)
+# ALL-CAPS placeholders that were not substituted in the scenario (TRUSTEE_UUID, VOTER_UUID…)
 _PLACEHOLDER = re.compile(r"[A-Z][A-Z_]{3,}")
-# критичні (небезпечні) операції — саме їх «дійшло до Helios» = справжня витік
+# critical (dangerous) operations — those "reaching Helios" is a real leak
 CRITICAL_OPS = ("/cast", "/cast_confirm", "/upload-decryption", "/encrypt_tally", "/freeze")
 
 
 def _mask(ep: str) -> str:
     if not ep:
         return "LOCAL"
-    if "/" not in ep:          # LOCAL / NETWORK (симуляція) — лишаємо як є
+    if "/" not in ep:          # LOCAL / NETWORK (simulation) — leave as is
         return ep[:48]
     ep = _UUID.sub("{id}", ep)
-    ep = _PLACEHOLDER.sub("{id}", ep)   # незамінені плейсхолдери → {id}
+    ep = _PLACEHOLDER.sub("{id}", ep)   # unsubstituted placeholders → {id}
     return ep[:48]
 
 
 def _verdict(r: dict) -> str:
-    """blocked (403) | leaked (крит.оп дійшла) | allowed (безпечний крок дійшов) |
-    simulated | not_executed. Розрізняємо leaked/allowed, щоб recon/логін (норма) не
-    виглядали як витік — червоний лише для НЕБЕЗПЕЧНОЇ операції, що дійшла до Helios."""
+    """blocked (403) | leaked (critical op reached) | allowed (safe step reached) |
+    simulated | not_executed. We distinguish leaked/allowed so recon/login (normal)
+    do not look like a leak — red is only for a DANGEROUS operation that reached Helios."""
     if r.get("is_simulated"):
         return "simulated"
     s = r.get("status_code")
@@ -56,7 +57,7 @@ def _verdict(r: dict) -> str:
         return "blocked"
     ep = r.get("endpoint", "") or ""
     is_crit = any(op in ep for op in CRITICAL_OPS)
-    return "leaked" if is_crit else "allowed"   # крит.оп дійшла = витік; інше = норма
+    return "leaked" if is_crit else "allowed"   # critical op reached = leak; else normal
 
 
 def build_flow(report: dict) -> dict:
@@ -97,7 +98,7 @@ def main():
     if not files:
         print(f"[-] Немає звітів у reports/attacks/{args.scope}/. Прожени campaign.")
         return
-    # дедуп по attack_class (останній) + adaptation_mode, щоб не дублювати
+    # dedup by attack_class (latest) + adaptation_mode, to avoid duplicates
     flows = {}
     for f in files:
         try:

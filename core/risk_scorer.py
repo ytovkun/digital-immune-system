@@ -1,12 +1,12 @@
 """
-Модуль: Risk Scorer v2
-Цифрова імунна система — risk_scorer.py
+Module: Risk Scorer v2
+Digital immune system — risk_scorer.py
 
-Читає репорти red_team_agent v2 → розраховує числовий ризик-скор
-на основі CIA + LINDDUN + MITRE ATT&CK + execution verdict.
-Генерує таблиці для дисертації (розділ 3.4).
+Reads red_team_agent v2 reports → computes a numeric risk score
+based on CIA + LINDDUN + MITRE ATT&CK + execution verdict.
+Generates tables for the dissertation (section 3.4).
 
-Формула:
+Formula:
   Risk = (CIA×0.35 + LINDDUN×0.25 + MITRE×0.15 + Execution×0.25) × Severity × 10
 """
 
@@ -152,10 +152,10 @@ def load_and_score(include_adaptive: bool = True) -> list:
         if not include_adaptive and is_adaptive:
             continue
         if ac:
-            # ключ = (клас, адаптивність): базова й адаптивна версії — окремі рядки
+            # key = (class, adaptiveness): base and adaptive versions are separate rows
             latest[(ac, is_adaptive)] = r
     scores = [score_report(r) for r in latest.values()]
-    # групуємо по класу, базова перед адаптивною (для порівняння еволюції)
+    # group by class, base before adaptive (to compare evolution)
     return sorted(scores, key=lambda x: (x["attack_class"], x["is_adaptive"]))
 
 
