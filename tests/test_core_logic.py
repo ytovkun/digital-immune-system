@@ -30,12 +30,6 @@ def test_cia_score_defaults_low_when_missing():
     assert rs.cia_score({}) == 0.25
 
 
-def test_parse_linddun_maps_keywords():
-    assert rs.parse_linddun("I — Identifiability") == ["I"]
-    assert "Nr" in rs.parse_linddun("Non-repudiation + Tracking")
-    assert rs.parse_linddun("щось невідоме") == ["L"]   # дефолт
-
-
 def test_linddun_score_single_vs_multi():
     single = rs.linddun_score("Identifiability")          # base I=0.20
     multi  = rs.linddun_score("Identifiability + Tracking")  # +0.05 бонус
@@ -162,3 +156,16 @@ def test_evaluate_step_success_local_simulated():
 def test_evaluate_step_success_server_error_fails():
     ok, _ = rta.evaluate_step_success("GET", "/x", 500, "boom", "", {})
     assert ok is False
+
+
+def test_parse_linddun_maps_keywords():
+    assert rs.parse_linddun("I — Identifiability") == ["I"]
+    assert "Nr" in rs.parse_linddun("Non-repudiation + Tracking")
+    assert rs.parse_linddun("Detecting") == ["D"]
+    assert rs.parse_linddun("Disclosure of Information") == ["Dd"]
+
+    parsed = rs.parse_linddun("Linkability + Disclosure of Information")
+    assert "L" in parsed
+    assert "Dd" in parsed
+
+    assert rs.parse_linddun("щось невідоме") == ["L"]

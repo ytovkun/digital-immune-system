@@ -33,14 +33,13 @@ CIA_WEIGHTS = {
 }
 
 LINDDUN_WEIGHTS = {
-    "L":  0.15,
-    "I":  0.20,
-    "T":  0.10,
-    "Td": 0.10,
-    "D":  0.10,
-    "Nr": 0.15,
-    "Nc": 0.15,
-    "U":  0.05,
+    "L":  0.15,   # Linking
+    "I":  0.20,   # Identifying
+    "Nr": 0.15,   # Non-repudiation
+    "D":  0.10,   # Detecting
+    "Dd": 0.10,   # Data Disclosure
+    "U":  0.05,   # Unawareness / Unintervenability
+    "Nc": 0.15,   # Non-compliance
 }
 
 SEVERITY_MAP = {
@@ -68,11 +67,35 @@ MITRE_BONUS_MAP = {
 
 def parse_linddun(linddun_str: str) -> list:
     mapping = {
-        "Linkability": "L", "Identifiability": "I", "Tracking": "T",
-        "Targeted": "Td", "Detectability": "D", "Non-repudiation": "Nr",
-        "Non-compliance": "Nc", "Unawareness": "U",
+        "Linkability": "L",
+        "Linking": "L",
+        "Tracking": "L",
+
+        "Identifiability": "I",
+        "Identifying": "I",
+
+        "Non-repudiation": "Nr",
+
+        "Detectability": "D",
+        "Detecting": "D",
+
+        "Disclosure of Information": "Dd",
+        "Data Disclosure": "Dd",
+
+        "Unawareness": "U",
+        "Unintervenability": "U",
+
+        "Non-compliance": "Nc",
     }
-    return [code for kw, code in mapping.items() if kw.lower() in linddun_str.lower()] or ["L"]
+
+    codes = []
+    value = linddun_str.lower()
+
+    for keyword, code in mapping.items():
+        if keyword.lower() in value and code not in codes:
+            codes.append(code)
+
+    return codes or ["L"]
 
 
 def cia_score(affected_cia: dict) -> float:
