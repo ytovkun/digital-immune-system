@@ -40,7 +40,7 @@ import requests
 from flask import Flask, request, Response, jsonify
 
 from fast_reflex import FastReflex, RATE_WINDOW_SEC, CONCURRENCY_WINDOW_SEC
-from ai_analyst import AIAnalyst, DEFAULT_MODEL
+from ai_analyst import AIAnalyst, DEFAULT_MODEL, _ip_pseudonym
 from threat_patterns import hard_payload_present, classify_hard_payload
 
 
@@ -161,6 +161,13 @@ NONHUMAN_TEMPO_THRESHOLD = 4           # ≥N різних endpoint за вік�
 # Antigen correlation: client fingerprint → recent IPs (to detect IP rotation).
 _fp_history = defaultdict(deque)       # fp → deque[(ts, ip)]
 FP_WINDOW_SEC = 60.0
+# A shared browser fingerprint (e.g. "Chrome") appears from MANY IPs in a real
+# election — thousands of voters use the same browser from different addresses. So
+# fp_distinct_ips over the full minute is NOT an attack signal by itself (it caused
+# false positives on legit voters — reviewer #4). Genuine APT IP-rotation is FAST:
+# one fingerprint cycling through many IPs within a few seconds. We flag only that.
+FP_ROTATION_BURST_WINDOW = 10.0        # seconds
+FP_ROTATION_MIN_IPS = 5                # distinct IPs within the burst window → fast rotation
 _UUID_RE2 = re.compile(
     r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', re.I)
 # a long SINGLE segment (ballot hash, etc.) — WITHOUT '/', so it does not eat "helios/elections"
@@ -250,12 +257,35 @@ def _redact_pii(path: str) -> str:
     return p
 
 
-def log_decision(entry: dict):
+ALLOWS_LOG = LOGS_DIR / "immune_l2_allows.jsonl"   # L2 ALLOW ledger (for FN-by-tier)
+
+
+def _scrub_entry(entry: dict) -> dict:
+    """Strip PII from a decision before it is written to disk: mask voter UUID in
+    the path AND pseudonymize the raw client IP (previously stored in the clear,
+    which could deanonymize a voter from the log)."""
     entry["timestamp"] = datetime.now(timezone.utc).isoformat()
     if "path" in entry:
-        entry["path"] = _redact_pii(entry["path"])   # без PII виборця в журналі
+        entry["path"] = _redact_pii(entry["path"])
+    if entry.get("client_ip"):
+        entry["client_ip"] = _ip_pseudonym(entry["client_ip"])
+    return entry
+
+
+def log_decision(entry: dict):
+    _scrub_entry(entry)
     _rotate_if_needed(BLOCKS_LOG)
     with open(BLOCKS_LOG, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def log_allow(entry: dict):
+    """Log an L2 ALLOW verdict to a SEPARATE ledger — so the AI's pass decisions are
+    auditable (false-negative-by-tier analysis) without inflating the block count in
+    immune_blocks.jsonl that defense_report/metrics read."""
+    _scrub_entry(entry)
+    _rotate_if_needed(ALLOWS_LOG)
+    with open(ALLOWS_LOG, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
@@ -361,9 +391,22 @@ def _record_fingerprint(fp: str, ip: str, now: float):
 
 
 def _fp_distinct_ips(fp: str, now: float, window: float = FP_WINDOW_SEC) -> int:
-    """How many DISTINCT IPs this fingerprint used in the window (>1 within seconds = IP rotation)."""
+    """How many DISTINCT IPs this fingerprint used in the window. NOTE: over the full
+    minute this is EXPECTED to be high in a real election (many voters, same browser)
+    — use _fp_rotation_fast for the actual APT-rotation signal."""
     with _state_lock:
         return len({ip for ts, ip in _fp_history.get(fp, ()) if now - ts <= window})
+
+
+def _fp_rotation_fast(fp: str, now: float,
+                      window: float = FP_ROTATION_BURST_WINDOW,
+                      min_ips: int = FP_ROTATION_MIN_IPS) -> bool:
+    """True only for FAST IP-rotation: one fingerprint seen from >=min_ips distinct
+    IPs within a short burst window. This separates a genuine low-and-slow APT that
+    cycles proxies within seconds from a legitimate crowd of voters sharing a browser
+    but spread out over the minute (the latter must NOT be flagged — reviewer #4)."""
+    with _state_lock:
+        return len({ip for ts, ip in _fp_history.get(fp, ()) if now - ts <= window}) >= min_ips
 
 
 def _trajectory_summary(actor: str, now: float) -> str:
@@ -679,6 +722,30 @@ def stats():
     })
 
 
+@app.route("/__immune__/reset", methods=["POST"])
+def reset_adaptive_state():
+    """Test-only hook: clear the proxy's ADAPTIVE state so separate labeled sets are
+    independent (a signature learned on the main set must not pre-block a held-out /
+    boundary sample — reviewer #4). Clears learned L1 sigs, the L2 verdict cache, and
+    the fingerprint/actor/session histories. Does NOT touch the persistent antibody DB.
+    Disabled unless DIS_TEST_RESET_ENABLED=1 so it is never a production backdoor; also
+    honors STATS_TOKEN when set."""
+    if os.environ.get("DIS_TEST_RESET_ENABLED", "").lower() not in ("1", "true", "yes"):
+        return Response(json.dumps({"error": "reset disabled (set DIS_TEST_RESET_ENABLED=1)"}),
+                        status=403, content_type="application/json")
+    if STATS_TOKEN and request.args.get("token") != STATS_TOKEN \
+            and request.headers.get("X-Stats-Token") != STATS_TOKEN:
+        return Response(json.dumps({"error": "Forbidden — потрібен stats-токен"}),
+                        status=403, content_type="application/json")
+    learned = reflex.reset_learned()
+    cache = analyst.reset_cache()
+    with _state_lock:
+        _fp_history.clear()
+        _actor_history.clear()
+        _session_cache.clear()
+    return jsonify({"reset": True, "learned_cleared": learned, "cache_cleared": cache})
+
+
 @app.route("/__immune__/metrics", methods=["GET"])
 def prometheus_metrics():
     """Export metrics in Prometheus text format (for SOC/Grafana scraping)."""
@@ -831,8 +898,10 @@ def proxy(path):
             "session_validated": _validate_session(sessionId, fullPath),
             # BEHAVIORAL TRAJECTORY — to detect multi-step attacks/APT
             "trajectory": _trajectory_summary(actorKey, time.time()),
-            # ANTIGEN: how many DIFFERENT IPs per one client fingerprint (IP rotation = evasion)
+            # ANTIGEN: distinct IPs per fingerprint (context; high is NORMAL in an
+            # election) + the actual fast-rotation APT signal (burst of IPs in ~10s)
             "fp_distinct_ips": _fp_distinct_ips(fpKey, _now0),
+            "fp_rotation_fast": _fp_rotation_fast(fpKey, _now0),
             # NON-HUMAN TEMPO before a voter action (4+ endpoints <2s) — a strong APT signal
             "nonhuman_tempo": nonhuman_tempo,
         }
@@ -872,7 +941,17 @@ def proxy(path):
             resp = make_block_response(aiDecision, "AIAnalyst")
             resp.headers["X-Immune-Score"] = str(round(threat_score, 4))
             return resp
-        # the AI allowed it
+        # the AI allowed it — log the ALLOW verdict (separate ledger) so a pass by
+        # L2 is auditable for false-negative-by-tier analysis
+        log_allow({
+            "tier": "AIAnalyst", "verdict": "ALLOW", "method": method,
+            "path": fullPath, "client_ip": clientIp,
+            "attack_class": aiDecision.get("attack_class"),
+            "confidence": aiDecision.get("confidence"),
+            "from_cache": aiDecision.get("from_cache"),
+            "session_validated": behavior.get("session_validated"),
+            "latency_ms": aiDecision.get("latency_ms"),
+        })
         if not aiDecision.get("from_cache"):
             print(f"  🟡 INSPECT→ALLOW [L2 ШІ] {method} {fullPath} "
                   f"({aiDecision.get('latency_ms')}ms)", flush=True)

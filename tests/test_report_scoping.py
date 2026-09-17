@@ -15,6 +15,51 @@ import defense_report as dr
 import coevolution_report as cr
 
 
+# ─── analyze_report: honest execution classification (login page / 302 / None) ──
+
+def _step(endpoint, status, preview="", simulated=False):
+    return {"result": {"endpoint": endpoint, "status_code": status,
+                       "response_preview": preview, "is_simulated": simulated}}
+
+
+def _report(steps, attack_class="ballot_stuffing"):
+    return {"attack_class": attack_class, "vector": "system", "execution_log": steps}
+
+
+def test_login_page_200_is_not_executed():
+    # a private-election access page (200 + Helios shell) must count as NOT executed
+    shell = '<!DOCTYPE html><html class="no-js"><title>Log In to View Election</title>'
+    a = dr.analyze_report(_report([_step("/helios/e/abc/cast", 200, shell)]))
+    assert a["crit_reached"] == 0
+    assert a["crit_other"] == 1
+    assert dr.classify_defense(a) == "NO_CRITICAL"
+
+
+def test_redirect_302_is_not_executed():
+    a = dr.analyze_report(_report([_step("/helios/e/abc/cast", 302, "")]))
+    assert a["crit_reached"] == 0 and a["crit_other"] == 1
+
+
+def test_real_json_dump_counts_as_executed():
+    # a non-shell 2xx (real data disclosure) IS a genuine executed critical op
+    a = dr.analyze_report(_report([_step("/helios/e/abc/cast", 200,
+                                         '[{"vote_hash": "abc"}]')]))
+    assert a["crit_reached"] == 1
+
+
+def test_none_status_not_credited_without_prior_dis_block():
+    # a failed request (status None) with NO preceding DIS block is NOT a DIS block
+    a = dr.analyze_report(_report([_step("/helios/e/abc/cast", None, "")]))
+    assert a["crit_blocked"] == 0 and a["crit_other"] == 1
+
+
+def test_none_status_credited_after_dis_block():
+    dis = _step("/helios/e/abc/cast", 403, "Digital Immune System: blocked")
+    later = _step("/helios/e/abc/cast_confirm", None, "")
+    a = dr.analyze_report(_report([dis, later]))
+    assert a["crit_blocked"] == 2   # the 403 + the chain-broken None
+
+
 def _mk(p: Path, name: str):
     p.mkdir(parents=True, exist_ok=True)
     (p / name).write_text(json.dumps({"attack_class": "x", "execution_log": []}),

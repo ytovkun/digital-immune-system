@@ -107,6 +107,16 @@ class FastReflex:
                 self._learned.popitem(last=False)
         return True
 
+    def reset_learned(self) -> int:
+        """Clear all AI-learned L1 signatures (test hook: make labeled sets independent
+        so a signature learned on set A does not pre-block a sample in set B). Returns
+        the number of signatures cleared. Does NOT touch rate/concurrency windows."""
+        with self._lock:
+            n = len(self._learned)
+            self._learned.clear()
+            self._learned_hits = 0
+            return n
+
     # ─── Helpers ──────────────────────────────────────────────────────────────
 
     def _evict_dead(self, now: float):

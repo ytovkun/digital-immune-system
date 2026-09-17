@@ -222,3 +222,46 @@ def test_build_prompt_does_not_leak_password_or_raw_ip():
                              "voter_id=voter4&password=hunter2", {"client_ip": "203.0.113.9"})
     assert "hunter2" not in prompt
     assert "203.0.113.9" not in prompt
+
+
+def test_redact_csrf_token_value():
+    # \btoken did not match inside "csrfmiddlewaretoken" → the anti-CSRF secret leaked
+    from ai_analyst import _redact_pii_for_prompt
+    out = _redact_pii_for_prompt("csrfmiddlewaretoken=Ab12Cd34Ef&choice=1")
+    assert "Ab12Cd34Ef" not in out and "{redacted}" in out
+
+
+def test_referer_uuid_redacted_in_prompt():
+    a = AIAnalyst()
+    ref = "http://h/helios/elections/c88cfaeb-abc0-4440-a165-a77cab2951f2/vote"
+    prompt = a._build_prompt("GET", "/x", {"Referer": ref}, "", {"client_ip": "1.2.3.4"})
+    assert "c88cfaeb" not in prompt        # voter/election UUID in Referer must not leak
+
+
+def test_uuid_redacted_before_truncation():
+    # a UUID near the 200-char path truncation boundary must be fully masked, not
+    # split in half (redaction runs BEFORE _sanitize truncates)
+    a = AIAnalyst()
+    long_prefix = "/helios/elections/" + "a" * 185 + "/"
+    path = long_prefix + "c88cfaeb-abc0-4440-a165-a77cab2951f2/cast"
+    prompt = a._build_prompt("POST", path, {"User-Agent": "x"}, "", {"client_ip": "1.1.1.1"})
+    assert "c88cfaeb" not in prompt and "a77cab2951f2" not in prompt
+
+
+def test_ip_pseudonym_not_reversible_across_secrets():
+    # HMAC-keyed: different secret → different pseudonym (unsalted SHA-1 was brute-forceable)
+    import importlib, ai_analyst as m
+    p1 = m._ip_pseudonym("203.0.113.7")
+    os.environ["DIS_IP_HMAC_SECRET"] = "another-secret-value"
+    importlib.reload(m)
+    p2 = m._ip_pseudonym("203.0.113.7")
+    del os.environ["DIS_IP_HMAC_SECRET"]
+    importlib.reload(m)
+    assert p1 != p2
+
+
+def test_reset_cache_clears_verdicts():
+    a = AIAnalyst()
+    a._cache["sig"] = ({"verdict": "BLOCK"}, 9e9)
+    assert a.reset_cache() == 1
+    assert len(a._cache) == 0

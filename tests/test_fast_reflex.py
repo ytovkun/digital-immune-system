@@ -202,3 +202,12 @@ def test_memory_eviction_caps_keys():
         r.evaluate("GET", "/helios/x/voters/", {}, f"10.0.{i//256}.{i%256}", "s")
     # after eviction the dicts are not unbounded
     assert len(r._rate_windows) <= MAX_TRACKED_KEYS + 2000
+
+
+def test_reset_learned_clears_signatures():
+    from fast_reflex import FastReflex
+    r = FastReflex()
+    assert r.add_learned_signature("onmouseover=", "xss") is True
+    assert len(r._learned) == 1
+    cleared = r.reset_learned()
+    assert cleared == 1 and len(r._learned) == 0 and r._learned_hits == 0

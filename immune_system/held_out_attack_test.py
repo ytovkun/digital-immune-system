@@ -24,8 +24,10 @@ import sys
 
 import json
 import time
+import http.client
 import requests
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -44,11 +46,33 @@ SRC_IP = "192.0.2.30"
 HDR = {"User-Agent": UA, "X-Forwarded-For": SRC_IP}
 
 
+def _raw_get(url: str, headers: dict, timeout=10):
+    """GET with the path sent LITERALLY (no dot-segment normalization) so a real
+    '../' traversal reaches the proxy. requests/urllib3 would collapse it to
+    /etc/passwd, turning a traversal test into a plain-path test (reviewer #4)."""
+    p = urlsplit(url)
+    conn = http.client.HTTPConnection(p.hostname, p.port or 80, timeout=timeout)
+    try:
+        conn.putrequest("GET", p.path + (("?" + p.query) if p.query else ""),
+                        skip_host=False, skip_accept_encoding=True)
+        for k, v in (headers or {}).items():
+            conn.putheader(k, v)
+        conn.endheaders()
+        resp = conn.getresponse()
+        body = resp.read().decode("utf-8", "replace")
+        r = requests.Response()
+        r.status_code = resp.status
+        r._content = body.encode("utf-8", "replace")
+        r.headers.update(dict(resp.getheaders()))
+        return r
+    finally:
+        conn.close()
+
+
 # Each probe: (name, why-it-is-novel description, request function)
 def probe_path_traversal():
-    return requests.get(
-        f"{PROXY}/helios/elections/{UUID}/../../../../etc/passwd",
-        headers=HDR, timeout=10, allow_redirects=False)
+    # raw request-target so the '../' is not normalized away before it hits the proxy
+    return _raw_get(f"{PROXY}/helios/elections/{UUID}/../../../../etc/passwd", HDR)
 
 
 def probe_sql_injection():
@@ -99,6 +123,15 @@ def main():
     except requests.exceptions.ConnectionError:
         print("\n  ❌ Проксі :8000 недоступний. Запусти immune_proxy.py (з ключем ШІ)")
         return
+
+    # Independence (reviewer #4): clear signatures learned by earlier sets so a
+    # held-out attack is caught on its MERITS, not by a pre-learned signature.
+    try:
+        rr = requests.post(f"{PROXY}/__immune__/reset", timeout=5)
+        if rr.status_code == 200:
+            print(f"  🧹 Проксі-стан скинуто перед held-out ({rr.json().get('learned_cleared')} сигнатур)")
+    except requests.exceptions.RequestException:
+        pass
 
     results = []
     for name, why, fn in HELD_OUT:

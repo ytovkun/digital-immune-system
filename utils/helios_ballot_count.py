@@ -97,6 +97,10 @@ def count_ballots() -> dict:
             result["source"] = "json"
             result["voted_count"] = len(ballots)   # one entry per voter who cast
             result["distinct_voters"] = len({b.get("voter_uuid") for b in ballots})
+            # per-voter vote_hash — the ONLY reliable signal for a vote CHANGE /
+            # re-cast by the same voter (count stays equal, but the hash flips).
+            result["hashes"] = {b.get("voter_uuid"): b.get("vote_hash")
+                                for b in ballots if b.get("voter_uuid")}
         # voters/ roster size — for the "X of N voters cast" denominator
         try:
             roster = session.get(VOTERS_URL, timeout=10, allow_redirects=False).json()
@@ -143,6 +147,26 @@ def do_diff():
             print("  ✅ Кількість бюлетенів НЕ зросла — накидання не зафіксовано.")
     else:
         print("  ⚠️  Лічильник недоступний (не-JSON список?) — порівняння неможливе.")
+
+    # vote_hash comparison — catches vote CHANGE / re-cast (same voter, count equal
+    # but hash flips). This is the ground truth for integrity harm, not the count.
+    hb, ha = before.get("hashes") or {}, after.get("hashes") or {}
+    if hb or ha:
+        changed = [v for v in hb if v in ha and hb[v] != ha[v]]
+        added   = [v for v in ha if v not in hb]
+        removed = [v for v in hb if v not in ha]
+        print("  ── vote_hash ──")
+        if not (changed or added or removed):
+            print("  ✅ Жоден vote_hash не змінився — підміни/зміни голосу НЕ зафіксовано.")
+        else:
+            if changed:
+                print(f"  🔴 ЗМІНЕНО голос у {len(changed)} виборця(ів) — підміна голосу!")
+                for v in changed:
+                    print(f"       {v}: {hb[v]} → {ha[v]}")
+            if added:
+                print(f"  🟡 Нові голоси: {len(added)} (voter_uuid: {', '.join(added)})")
+            if removed:
+                print(f"  🟠 Зникли голоси: {len(removed)}")
     print("=" * 60)
     return 0
 

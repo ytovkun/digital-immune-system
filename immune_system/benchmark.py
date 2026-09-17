@@ -18,9 +18,11 @@ Out:  metrics + reports/benchmark_{ts}.json
 import sys
 import json
 import time
+import http.client
 import requests
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from env_loader import load_config
@@ -305,6 +307,58 @@ def _authenticated_session(client_ip: str) -> requests.Session:
     return s
 
 
+def _reset_adaptive_state():
+    """Best-effort: ask the proxy to clear AI-learned signatures + verdict cache so
+    this labeled set is INDEPENDENT of any prior run (a signature learned earlier must
+    not pre-block a sample here — reviewer #4). No-op unless the proxy has
+    DIS_TEST_RESET_ENABLED=1; failure is non-fatal."""
+    try:
+        r = requests.post(f"{PROXY}/__immune__/reset", timeout=5)
+        if r.status_code == 200:
+            j = r.json()
+            print(f"  🧹 Проксі-стан скинуто: learned={j.get('learned_cleared')}, "
+                  f"cache={j.get('cache_cleared')}")
+        else:
+            print("  ℹ️  Reset проксі недоступний (DIS_TEST_RESET_ENABLED=1?) — "
+                  "набори можуть бути залежними")
+    except requests.exceptions.RequestException:
+        pass
+
+
+def _needs_raw_path(path: str) -> bool:
+    """Path-traversal samples must reach the wire UN-normalized. requests/urllib3
+    collapse dot-segments (../../etc/passwd → /etc/passwd), so the proxy would never
+    see the traversal (reviewer #4). We send these via http.client, which puts the
+    request-target on the wire literally."""
+    low = path.lower()
+    return (".." in path) or ("%2e" in low) or ("..\\" in path)
+
+
+def _send_raw(method: str, url: str, headers: dict, body, timeout=25):
+    """Send a request with the path EXACTLY as given (no dot-segment normalization).
+    Returns (status_code, text, resp_headers). http-only (localhost lab)."""
+    parts = urlsplit(url)
+    conn = http.client.HTTPConnection(parts.hostname, parts.port or 80, timeout=timeout)
+    try:
+        target = parts.path
+        if parts.query:
+            target += "?" + parts.query
+        conn.putrequest(method, target, skip_host=False, skip_accept_encoding=True)
+        for k, v in (headers or {}).items():
+            conn.putheader(k, v)
+        data = body.encode() if isinstance(body, str) else (body or b"")
+        if data:
+            conn.putheader("Content-Length", str(len(data)))
+        conn.endheaders()
+        if data:
+            conn.send(data)
+        resp = conn.getresponse()
+        raw = resp.read()
+        return resp.status, raw.decode("utf-8", "replace"), dict(resp.getheaders())
+    finally:
+        conn.close()
+
+
 def send(item, client_ip: str):
     if item.get("auth"):
         s = _authenticated_session(client_ip)   # справжня автентифікована сесія (один IP)
@@ -320,9 +374,19 @@ def send(item, client_ip: str):
     if item["browser"] and not item.get("auth"):
         s.cookies.set("sessionid", "browser-no-auth")   # браузер без логіну
     try:
-        r = s.request(item["method"], f"{PROXY}{item['path']}",
-                      data=item["body"], headers=headers,
-                      timeout=25, allow_redirects=False)
+        # path-traversal samples: send the literal (un-normalized) request-target so
+        # the '../' actually reaches the proxy instead of being collapsed by requests
+        if _needs_raw_path(item["path"]):
+            status, text, rh = _send_raw(item["method"], f"{PROXY}{item['path']}",
+                                         headers, item["body"])
+            r = requests.Response()
+            r.status_code = status
+            r._content = text.encode("utf-8", "replace")
+            r.headers.update(rh)
+        else:
+            r = s.request(item["method"], f"{PROXY}{item['path']}",
+                          data=item["body"], headers=headers,
+                          timeout=25, allow_redirects=False)
         blocked = (r.status_code in (400, 403, 413) and
                    ("Immune" in r.text or r.status_code in (400, 413)))
         info = ""
@@ -386,6 +450,7 @@ def main():
         print("\n  ❌ Проксі :8000 недоступний. Запусти immune_proxy.py (з ключем ШІ)")
         return
 
+    _reset_adaptive_state()   # independence: clear signatures learned by prior sets
     dataset = build_dataset() * scale
     TP = TN = FP = FN = 0
     errors = 0

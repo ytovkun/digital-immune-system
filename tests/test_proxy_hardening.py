@@ -92,6 +92,24 @@ def test_fingerprint_distinct_ips_counts_rotation():
     assert proxy._fp_distinct_ips(fp, now) == 6     # IP rotation visible via the antigen
 
 
+def test_fp_rotation_fast_distinguishes_crowd_from_apt():
+    import time
+    proxy._fp_history.clear()
+    now = time.time()
+    # legit CROWD: many voters sharing a browser fingerprint, spread over the minute
+    # (one IP every 3s) — high distinct-IP count but NOT a fast burst → not flagged
+    fp_crowd = "fp:crowd"
+    for i in range(12):
+        proxy._record_fingerprint(fp_crowd, f"203.0.113.{i}", now - (36 - i * 3))
+    assert proxy._fp_distinct_ips(fp_crowd, now) >= 10       # high over the minute
+    assert proxy._fp_rotation_fast(fp_crowd, now) is False   # but NOT a fast rotation
+    # APT: one fingerprint cycling many IPs within a few seconds → flagged
+    fp_apt = "fp:apt"
+    for i in range(6):
+        proxy._record_fingerprint(fp_apt, f"10.0.0.{i}", now - i)   # 6 IPs in 6s
+    assert proxy._fp_rotation_fast(fp_apt, now) is True
+
+
 def test_fingerprint_distinct_ips_isolated_per_fp():
     import time
     proxy._fp_history.clear()

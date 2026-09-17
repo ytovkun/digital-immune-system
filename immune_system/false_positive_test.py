@@ -28,8 +28,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "core"))
 from env_loader import load_config
 from _sec_result import save_security_result
+try:
+    from red_team_agent import build_valid_ballot   # reuse the B-full ballot bridge
+except Exception:                                    # noqa: BLE001
+    build_valid_ballot = None
 
 _cfg = load_config()
 PROXY  = "http://localhost:8000"   # через ЦІС
@@ -65,17 +70,19 @@ def legitimate_voter_journey(login: str, password: str, client_ip: str = "203.0.
 
     def do(label, method, path, **kw):
         url = f"{PROXY}{path}"
+        r = None
         try:
             if method == "GET":
-                r = s.get(url, timeout=10, allow_redirects=False, **kw)
+                r = s.get(url, timeout=15, allow_redirects=False, **kw)
             else:
-                r = s.post(url, timeout=10, allow_redirects=False, **kw)
+                r = s.post(url, timeout=15, allow_redirects=False, **kw)
             blocked = (r.status_code == 403 and "Immune" in r.text)
             steps.append((label, r.status_code, blocked))
         except requests.exceptions.RequestException as e:
             steps.append((label, f"ERR:{type(e).__name__}", False))
         time.sleep(2.5)  # REALISTIC human tempo: a voter reads the page and enters
         #                  data over seconds, not in 0.8s (0.8s = a non-human burst)
+        return r
 
     # 1. Voter opens the election page
     do("Перегляд виборів", "GET", f"/helios/elections/{UUID}/view")
@@ -83,19 +90,36 @@ def legitimate_voter_journey(login: str, password: str, client_ip: str = "203.0.
     login_url = f"{PROXY}/helios/elections/{UUID}/password_voter_login"
     token = csrf(s, login_url)
     do("Сторінка логіну", "GET", f"/helios/elections/{UUID}/password_voter_login")
-    # 3. Enters their real credentials
-    do("Логін (правильний пароль)", "POST", "/auth/password/login",
+    # 3. Enters real credentials via the ELECTION-SCOPED login (a private election
+    #    needs password_voter_login, not the generic /auth/password/login — otherwise
+    #    the voter session is never established and the "vote" below is not real).
+    do("Логін (правильний пароль)", "POST",
+       f"/helios/elections/{UUID}/password_voter_login",
        data={"voter_id": login, "password": password,
-             "csrfmiddlewaretoken": token, "election_uuid": UUID},
+             "csrfmiddlewaretoken": token, "return_url": ""},
        headers={"Referer": login_url})
     # 4. Views the ballot
     do("Сторінка голосування", "GET", f"/helios/elections/{UUID}/vote")
-    # 5. Votes ONCE (a normal ballot)
+    # 5. Casts a REAL, cryptographically valid ballot (reviewer #5: the previous fake
+    #    JSON made Helios 500, so a genuine legit vote through the proxy was never
+    #    tested). Build via the Helios crypto bridge; fall back to the old fake if the
+    #    bridge is unavailable (still exercises the proxy's allow/block decision).
+    ballot = build_valid_ballot(UUID, choice=0) if build_valid_ballot else None
+    if ballot is None:
+        ballot = json.dumps({"answers": [{"choices": [0]}]})
     vote_token = csrf(s, f"{PROXY}/helios/elections/{UUID}/view")
-    do("Подача голосу (одноразова)", "POST", f"/helios/elections/{UUID}/cast",
-       data={"encrypted_vote": json.dumps({"answers": [{"choices": [0]}]}),
-             "csrfmiddlewaretoken": vote_token},
+    do("Подача голосу (валідний бюлетень)", "POST", f"/helios/elections/{UUID}/cast",
+       data={"encrypted_vote": ballot, "csrfmiddlewaretoken": vote_token},
        headers={"Referer": f"{PROXY}/helios/elections/{UUID}/vote"})
+    # 5b. Confirm the vote — Helios' own csrf_token field (from the confirm page)
+    confirm = do("Сторінка підтвердження", "GET", f"/helios/elections/{UUID}/cast_confirm")
+    helios_csrf = ""
+    if confirm is not None:
+        m = re.search(r'name=["\']csrf_token["\']\s+value=["\']([^"\']+)', confirm.text)
+        helios_csrf = m.group(1) if m else ""
+    do("Підтвердження голосу", "POST", f"/helios/elections/{UUID}/cast_confirm",
+       data={"csrf_token": helios_csrf},
+       headers={"Referer": f"{PROXY}/helios/elections/{UUID}/cast_confirm"})
     # 6. Verifies the vote was counted
     do("Перевірка бюлетеня", "GET", f"/helios/elections/{UUID}/ballots/")
 

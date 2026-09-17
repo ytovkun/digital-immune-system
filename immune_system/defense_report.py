@@ -53,6 +53,34 @@ def _dis_blocked(r: dict) -> bool:
     body = r.get("response_preview") or ""
     return "Immune" in body or "Digital Immune System" in body
 
+
+# Markers of a Helios HTML framework page (login / view / error / confirm shell).
+# A critical operation that actually COMMITTED never returns such a page — a real
+# /cast success is a 302 redirect to the ballot board, and access control for a
+# private election returns the "Log In to View Election" shell. So a 2xx carrying
+# this shell is NOT proof of execution.
+_HELIOS_SHELL_MARKERS = ("<!doctype html", "no-js", "foundation",
+                         "log in to view election")
+
+
+def _executed_at_backend(r: dict) -> bool:
+    """Positive evidence a critical op actually EXECUTED at Helios.
+
+    HTTP status alone cannot prove it, and this was the core reporting bug:
+      * a private-election access-control page returns 200 with the Helios shell
+        ("Log In to View Election") — nothing executed;
+      * a staged / rejected /cast returns a 302 redirect — nothing committed.
+    So a critical op counts as executed ONLY when the response is a 2xx that is
+    NOT the Helios HTML shell (e.g. a real JSON data dump = disclosure). A 302 or
+    any HTML shell never counts. Real ballot commits are confirmed out-of-band via
+    vote_hash comparison (helios_ballot_count --hashes), not via status here."""
+    if r.get("status_code") not in (200, 201):
+        return False
+    body = (r.get("response_preview") or "").lower()
+    if any(m in body for m in _HELIOS_SHELL_MARKERS):
+        return False
+    return True
+
 # Attacks that by nature are NOT blocked at the server proxy
 # (they happen between people, in the victim's browser, or at the network level)
 OFF_SERVER_CLASSES = {
@@ -87,6 +115,11 @@ def analyze_report(report: dict) -> dict:
     effect against the Helios DB (ballot count before/after)."""
     crit_blocked = crit_reached = crit_other = 0
     crit_steps = []
+    # A None status (request errored / never ran) counts as a DIS block ONLY if the
+    # chain was actually broken by an earlier proxy 403 — otherwise it is just a
+    # failed request and must not be credited to the defense.
+    has_dis_block = any(_dis_blocked(e.get("result", {}))
+                        for e in report.get("execution_log", []))
     for entry in report.get("execution_log", []):
         r = entry["result"]
         ep = r.get("endpoint", "") or ""
@@ -95,15 +128,21 @@ def analyze_report(report: dict) -> dict:
         if any(op in ep for op in CRITICAL_OPS):
             status = r.get("status_code")
             op_name = ep.rstrip("/").split("/")[-1]
-            if _dis_blocked(r) or status is None:
+            if _dis_blocked(r):
                 crit_blocked += 1
-                crit_steps.append(f"{op_name}:{'DIS-БЛОК' if status == 403 else 'обірвано'}")
-            elif status in (200, 201, 302):
+                crit_steps.append(f"{op_name}:DIS-БЛОК")
+            elif status is None and has_dis_block:
+                crit_blocked += 1
+                crit_steps.append(f"{op_name}:обірвано(після DIS-блоку)")
+            elif _executed_at_backend(r):
                 crit_reached += 1
-                crit_steps.append(f"{op_name}:{status}⚠витік")
+                crit_steps.append(f"{op_name}:{status}⚠виконано")
             else:
+                # login-page 200, 302 redirect, 4xx/5xx, non-DIS 403, or a failed
+                # request with no preceding DIS block → NOT demonstrably executed.
                 crit_other += 1
-                crit_steps.append(f"{op_name}:{status}(не виконано)")
+                lbl = status if status is not None else "err"
+                crit_steps.append(f"{op_name}:{lbl}(не виконано)")
     return {
         "attack_class":  report.get("attack_class"),
         "vector":        report.get("vector", "system"),
@@ -219,28 +258,43 @@ def main():
     print(f"\n  {'─'*80}")
 
     # ─── Summary ────────────────────────────────────────────────────────────────
-    neutralized = counts["NEUTRALIZED"] + counts["PARTIAL_BLOCK"]
-    off_server  = counts["OFF_SERVER"] + counts["NO_CRITICAL"]
-    leaked      = counts["LEAKED"]
+    neutralized = counts["NEUTRALIZED"]
+    partial     = counts["PARTIAL_BLOCK"]
+    off_server  = counts["OFF_SERVER"]        # network/browser/human — NOT NO_CRITICAL
+    no_critical = counts["NO_CRITICAL"]       # crit op present but nothing executed/blocked
     total       = len(analyses)
     crit_blocked_total = sum(a["crit_blocked"] for a in analyses)
     crit_reached_total = sum(a["crit_reached"] for a in analyses)
     crit_other_total   = sum(a.get("crit_other", 0) for a in analyses)
+    # A real leak = ANY attack with a demonstrably executed critical op — this
+    # includes PARTIAL_BLOCK (some blocked, some executed), which the old "leaked =
+    # counts['LEAKED']" silently dropped, letting the manifest print leaked=0.
+    leaked_attacks = sum(1 for a in analyses if a["crit_reached"] > 0)
 
     print("  📊 ПІДСУМОК ЗАХИСТУ")
     print(f"     🛡  Нейтралізовано (критична операція заблокована DIS): {neutralized}/{total}")
+    if partial:
+        print(f"     🟡 Частково (частину заблоковано, частину виконано): {partial}/{total}")
+    print(f"     🔴 Виконано у Helios (2xx з реальними даними; ПІДТВЕРДЖУЙ vote_hash): "
+          f"{leaked_attacks}/{total}")
     print(f"     🌐 Поза зоною серверного захисту (мережа/браузер/люди): {off_server}/{total}")
-    print(f"     🔴 Пропущено (крит-оп ВИКОНАЛАСЬ у Helios, 2xx/3xx): {leaked}/{total}")
+    if no_critical:
+        print(f"     ◻️  Без крит-ефекту (крит-оп була, але НЕ виконалась і не DIS-блок): "
+              f"{no_critical}/{total}")
     if crit_other_total:
-        print(f"     ◻️  Крит-оп не виконано і не DIS-блок (404/5xx/не-DIS 403): {crit_other_total}")
-    # Explicit list of "off-server" — so a reviewer does not read them as "leaked":
-    # these are network/browser/human-level attacks that the server proxy does NOT
-    # intercept by definition (not a "hole" but a boundary of applicability).
+        print(f"        (крит-кроків 'не виконано' — сторінка логіну/302/4xx/5xx: {crit_other_total})")
+    # Explicit list of "off-server" ONLY — network/browser/human-level attacks the
+    # proxy does not intercept by definition (a boundary of applicability, not a hole).
+    # tally_manipulation etc. are NO_CRITICAL, NOT off-server, and are listed apart.
     off_classes = sorted({a["attack_class"] for a in analyses
-                          if classify_defense(a) in ("OFF_SERVER", "NO_CRITICAL")})
+                          if classify_defense(a) == "OFF_SERVER"})
+    nocrit_classes = sorted({a["attack_class"] for a in analyses
+                             if classify_defense(a) == "NO_CRITICAL"})
     if off_classes:
-        print("     ↳ поза сервером (за визначенням, не «дірки»): "
-              + ", ".join(off_classes))
+        print("     ↳ поза сервером (за визначенням, не «дірки»): " + ", ".join(off_classes))
+    if nocrit_classes:
+        print("     ↳ без підтвердженого крит-ефекту (Helios сам відхилив): "
+              + ", ".join(nocrit_classes))
     print(f"\n     Небезпечних операцій заблоковано: {crit_blocked_total}/"
           f"{crit_blocked_total + crit_reached_total} "
           f"({crit_blocked_total/(crit_blocked_total+crit_reached_total)*100:.0f}%)"
@@ -270,8 +324,10 @@ def main():
         "total_attacks": total,
         "summary": {
             "neutralized": neutralized,
+            "partial":     partial,
             "off_server":  off_server,
-            "leaked":      leaked,
+            "no_critical": no_critical,
+            "leaked":      leaked_attacks,   # attacks with ANY executed crit op (incl PARTIAL)
             "critical_ops_blocked":  crit_blocked_total,
             "critical_ops_reached":  crit_reached_total,
             "critical_ops_other":    crit_other_total,
@@ -295,9 +351,10 @@ def main():
         "LEAKED": "ПРОПУЩЕНО", "OFF_SERVER": "ПОЗА СЕРВЕРОМ", "NO_CRITICAL": "немає критич.",
     }
     tbl = [
-        "ТАБЛИЦЯ 3.8 — Ефективність захисту ЦІС",
+        "ТАБЛИЦЯ — Ефективність захисту ЦІС (defense-in-depth)",
         f"            Режим: {scope_label}",
-        "            (чи дійшла НЕБЕЗПЕЧНА операція до Helios, а не «чи завершив скрипт»)",
+        "            (чи ВИКОНАЛАСЬ небезпечна операція у Helios, а не «чи завершив скрипт»;",
+        "             реальний ефект підтверджується порівнянням vote_hash, не HTTP-статусом)",
         "",
         f"{'№':<3} {'Атака':<38} {'Вектор':<8} {'Крит.оп(блок/усього)':<22} {'Статус захисту':<16} Agent",
         "─" * 100,
@@ -310,11 +367,16 @@ def main():
     denom = crit_blocked_total + crit_reached_total
     pct = f"{crit_blocked_total/denom*100:.0f}%" if denom else "—"
     tbl += [
-        f"Нейтралізовано: {neutralized}/{total} | Поза сервером: {off_server}/{total} | Пропущено: {leaked}/{total}",
-        f"Небезпечних операцій заблоковано: {crit_blocked_total}/{denom} ({pct})",
+        f"Нейтралізовано: {neutralized}/{total} | Частково: {partial}/{total} | "
+        f"Поза сервером: {off_server}/{total} | Без крит-ефекту: {no_critical}/{total} | "
+        f"Виконано (vote_hash!): {leaked_attacks}/{total}",
+        f"Небезпечних операцій заблоковано DIS: {crit_blocked_total}/{denom} ({pct})",
         "",
         "Примітки: критичні операції = POST /cast, /cast_confirm, /upload-decryption,",
-        "  /encrypt_tally. «Поза сервером» — атаки мережевого/браузерного/людського рівня.",
+        "  /encrypt_tally, /freeze. «Поза сервером» — атаки мережевого/браузерного/",
+        "  людського рівня (не перехоплюються проксі за визначенням). «Без крит-ефекту» —",
+        "  крит-оп була, але Helios сам її відхилив (сторінка логіну/302/5xx), не DIS.",
+        "  «Виконано» підтверджується ПОРІВНЯННЯМ vote_hash до/після, а не HTTP-статусом.",
     ]
     (defense_dir / f"defense_table_{tag}{ts}.txt").write_text("\n".join(tbl), encoding="utf-8")
     print(f"  [+] Таблиця для дисертації: reports/defense/defense_table_{tag}{ts}.txt")

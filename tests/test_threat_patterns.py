@@ -102,3 +102,19 @@ def test_is_malicious_signature_guards_legit_routes():
     assert not tp.is_malicious_signature("abc")
     assert not tp.is_malicious_signature("hello world")
     assert not tp.is_malicious_signature("")
+
+
+def test_is_malicious_signature_rejects_benign_tokens_with_anomaly_chars():
+    # REGRESSION: broad single-char anomaly markers ("'", '"', ';', "0x", "--")
+    # must NOT make a benign token learnable — otherwise a model verdict echoing
+    # a surname/attribute would poison L1 and block real voters (self-DoS).
+    assert not tp.is_malicious_signature("o'brien")        # apostrophe surname
+    assert not tp.is_malicious_signature("d'angelo")
+    assert not tp.is_malicious_signature('lang="uk"')      # html attribute
+    assert not tp.is_malicious_signature("page=2;")        # trailing semicolon
+    assert not tp.is_malicious_signature("0x00")           # hex literal
+    assert not tp.is_malicious_signature("value--x")       # SQL-comment-looking text
+    # but genuine multi-char markers still pass
+    assert tp.is_malicious_signature("<iframe src=x>")
+    assert tp.is_malicious_signature("javascript:alert(1)")
+    assert tp.is_malicious_signature("/etc/passwd")

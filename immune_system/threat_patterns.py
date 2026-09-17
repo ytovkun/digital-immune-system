@@ -163,20 +163,36 @@ LEGIT_ROUTE_SEGMENTS = (
 )
 
 
+# Tokens SAFE to learn as an L1 deterministic-block signature. NARROW on purpose:
+# only multi-char, context-independent attack markers that legitimate traffic never
+# contains. Deliberately EXCLUDES the broad ANOMALY markers ("'", '"', ';', '--',
+# '0x', '%27', '</') — those occur in benign values (surnames like O'Brien, hex
+# like 0x00, attributes like lang="uk", "page=2;") and must NOT become a learned
+# signature, or looking up voter O'Brien would be blocked at L1 for an hour.
+LEARNABLE_SIGNATURE_TOKENS = tuple(L1_HARD_BLOCK.keys()) + (
+    # XSS event handlers / js-URI — unambiguous, multi-char
+    "onerror=", "onload=", "onmouseover=", "onclick=", "onfocus=", "onmouseout=",
+    "javascript:", "<iframe", "<img",
+    # unambiguous injection/exfil markers
+    "%2e%2e", "/etc/passwd", "sleep(", "waitfor",
+)
+
+
 def is_malicious_signature(sig: str) -> bool:
     """
     Whether a token is SAFE to learn as an L1 deterministic-block signature.
     Guard against autoimmune poisoning: the token must (a) be 4–60 chars, (b) NOT
-    be / contain a legitimate route segment, and (c) be recognizably malicious on
-    its own (an anomaly/hard-malicious marker). A benign path like "/cast" fails
-    (c) and (b); a real attack marker like "onmouseover=" or "union select" passes.
+    be / contain a legitimate route segment, and (c) CONTAIN an unambiguous,
+    multi-char attack marker from LEARNABLE_SIGNATURE_TOKENS. A benign path like
+    "/cast" fails (b); a surname like "o'brien", a hex "0x00" or an attribute
+    'lang="uk"' fail (c); a real marker like "onmouseover=" or "union select" passes.
     """
     s = (sig or "").strip().lower()
     if not (4 <= len(s) <= 60):
         return False
     if any(seg in s or s in seg for seg in LEGIT_ROUTE_SEGMENTS):
         return False
-    return anomaly_payload_match(s) or is_pattern_malicious(s, "")
+    return any(tok in s for tok in LEARNABLE_SIGNATURE_TOKENS)
 
 
 def detect_injection(text: str) -> bool:
