@@ -51,7 +51,10 @@ INJECTION_PAYLOADS = [
 def attack_with_injection(payload_text: str):
     """Malicious unauthenticated POST /cast with prompt-injection in the body."""
     s = requests.Session()  # WITHOUT login — this is an attack
-    s.headers.update({"User-Agent": "python-requests/2.31"})
+    # Distinct source IP for this experiment (isolates its actor history from the
+    # other security tests and the campaign — methodology hygiene).
+    s.headers.update({"User-Agent": "python-requests/2.31",
+                      "X-Forwarded-For": "192.0.2.40"})
     body = json.dumps({"encrypted_vote": payload_text, "note": payload_text})
     return s.post(f"{PROXY}/helios/elections/{UUID}/cast",
                   data=body,

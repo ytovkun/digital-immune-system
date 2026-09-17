@@ -38,41 +38,45 @@ PROXY = "http://localhost:8000"
 UUID  = _cfg.get("helios", {}).get("election_uuid", "c88cfaeb-abc0-4440-a165-a77cab2951f2")
 
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0"
+# Distinct source IP for THIS experiment — keeps its actor/behavioral history
+# isolated from the other security tests and the campaign (methodology hygiene).
+SRC_IP = "192.0.2.30"
+HDR = {"User-Agent": UA, "X-Forwarded-For": SRC_IP}
 
 
 # Each probe: (name, why-it-is-novel description, request function)
 def probe_path_traversal():
     return requests.get(
         f"{PROXY}/helios/elections/{UUID}/../../../../etc/passwd",
-        headers={"User-Agent": UA}, timeout=10, allow_redirects=False)
+        headers=HDR, timeout=10, allow_redirects=False)
 
 
 def probe_sql_injection():
     return requests.get(
         f"{PROXY}/helios/elections/{UUID}/voters/",
         params={"q": "1' OR '1'='1' --", "limit": "999"},
-        headers={"User-Agent": UA}, timeout=10, allow_redirects=False)
+        headers=HDR, timeout=10, allow_redirects=False)
 
 
 def probe_election_deletion():
     return requests.post(
         f"{PROXY}/helios/elections/{UUID}/delete",
         data={"confirm": "yes"},
-        headers={"User-Agent": UA, "Referer": f"{PROXY}/"},
+        headers={**HDR, "Referer": f"{PROXY}/"},
         timeout=10, allow_redirects=False)
 
 
 def probe_ballot_deletion():
     return requests.delete(
         f"{PROXY}/helios/elections/{UUID}/ballots/somehash123",
-        headers={"User-Agent": UA}, timeout=10, allow_redirects=False)
+        headers=HDR, timeout=10, allow_redirects=False)
 
 
 def probe_xss_template():
     return requests.get(
         f"{PROXY}/helios/elections/{UUID}/view",
         params={"msg": "<script>alert(document.cookie)</script>{{7*7}}"},
-        headers={"User-Agent": UA}, timeout=10, allow_redirects=False)
+        headers=HDR, timeout=10, allow_redirects=False)
 
 
 HELD_OUT = [

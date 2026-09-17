@@ -52,7 +52,10 @@ def main():
     latencies = []
     blocked = 0
     s = requests.Session()
-    s.headers.update({"User-Agent": "python-requests/2.31"})
+    # Distinct source IP for this experiment (isolates its actor history from the
+    # other security tests and the campaign — methodology hygiene).
+    s.headers.update({"User-Agent": "python-requests/2.31",
+                      "X-Forwarded-For": "192.0.2.50"})
     for i in range(FLOOD_COUNT):
         # cache-busting via a UNIQUE query parameter (it is part of the cache
         # signature, unlike the body) — each request a cache miss → forces a Claude call

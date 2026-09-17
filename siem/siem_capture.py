@@ -67,10 +67,17 @@ def main():
             ua = BROWSER_UA if item["browser"] else "python-requests/2.31"
             headers = dict(item.get("headers") or {})
             headers.setdefault("User-Agent", ua)
+            # URL-encode the request line exactly as an HTTP client puts it on the wire.
+            # A real Apache access.log has an ENCODED request line (no raw spaces); Wazuh's
+            # apache decoder does not parse raw-space lines, which silently dropped every
+            # SQLi/XSS with a space and caused the 0/7 SQLi (reviewer #11). path_url is the
+            # requoted path+query (e.g. /voters/?q=1%20UNION%20SELECT&_bid=67).
+            prepped = requests.Request(item["method"], url, data=item.get("body"),
+                                       headers=headers).prepare()
+            req_line = prepped.path_url
             status = 200
             try:
-                r = requests.request(item["method"], url, data=item.get("body"),
-                                     headers=headers, timeout=10, allow_redirects=False)
+                r = requests.Session().send(prepped, timeout=10, allow_redirects=False)
                 status = r.status_code
                 sent += 1
             except requests.exceptions.RequestException:
@@ -78,7 +85,7 @@ def main():
             # Apache combined access-log line (what Wazuh reads; contains _bid in the URL)
             ts = time.strftime("%d/%b/%Y:%H:%M:%S %z")
             ref = headers.get("Referer", "-")
-            alog.write(f'127.0.0.1 - - [{ts}] "{item["method"]} {path_bid} HTTP/1.1" '
+            alog.write(f'127.0.0.1 - - [{ts}] "{item["method"]} {req_line} HTTP/1.1" '
                        f'{status} 0 "{ref}" "{ua}"\n')
             time.sleep(0.03)
 

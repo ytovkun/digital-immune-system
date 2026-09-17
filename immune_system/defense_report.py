@@ -39,8 +39,19 @@ REPORTS_DIR = ROOT / _cfg.get("paths", {}).get("reports_dir", "reports")
 LOGS_DIR    = ROOT / _cfg.get("paths", {}).get("logs_dir", "logs")
 BLOCKS_LOG  = LOGS_DIR / "immune_blocks.jsonl"
 
-# Critical operations — these cause the real harm
-CRITICAL_OPS = ("/cast", "/cast_confirm", "/upload-decryption", "/encrypt_tally")
+# Critical operations — these cause the real harm. Kept in sync with
+# ai_analyst.CRITICAL_ENDPOINTS / attack_flow.CRITICAL_OPS (incl. /freeze).
+CRITICAL_OPS = ("/cast", "/cast_confirm", "/upload-decryption", "/encrypt_tally", "/freeze")
+
+
+def _dis_blocked(r: dict) -> bool:
+    """Whether a 403 was returned by the immune PROXY (not a Helios/Django 403,
+    e.g. a CSRF rejection). Only a DIS-origin 403 counts as a defense block —
+    otherwise the metric would credit the DIS for Helios's own rejections."""
+    if r.get("status_code") != 403:
+        return False
+    body = r.get("response_preview") or ""
+    return "Immune" in body or "Digital Immune System" in body
 
 # Attacks that by nature are NOT blocked at the server proxy
 # (they happen between people, in the victim's browser, or at the network level)
@@ -63,9 +74,18 @@ def load_blocks() -> list:
 
 
 def analyze_report(report: dict) -> dict:
-    """Count critical operations: blocked / reached Helios."""
-    crit_blocked = 0
-    crit_reached = 0
+    """Classify each critical operation by outcome (source-aware, honest):
+      crit_blocked — prevented by the DIS: a proxy 403, OR None (chain broken by an
+                     earlier DIS block so the crit step never ran);
+      crit_reached — LEAKED: a SUCCESSFUL backend response (2xx/3xx), i.e. the
+                     dangerous op actually executed and returned;
+      crit_other   — neither: a non-DIS 403 (Helios/CSRF rejection), 404 (endpoint
+                     absent) or 5xx (server error) — the op did NOT execute, but it
+                     was NOT a DIS block either. Counting these as "leaked" (old bug)
+                     overstated leaks; crediting the DIS for them overstated blocks.
+    NOTE: a 2xx does not by itself prove a real ballot was cast — confirm baseline
+    effect against the Helios DB (ballot count before/after)."""
+    crit_blocked = crit_reached = crit_other = 0
     crit_steps = []
     for entry in report.get("execution_log", []):
         r = entry["result"]
@@ -75,27 +95,23 @@ def analyze_report(report: dict) -> dict:
         if any(op in ep for op in CRITICAL_OPS):
             status = r.get("status_code")
             op_name = ep.rstrip("/").split("/")[-1]
-            # Metric — "did the dangerous operation REACH Helios":
-            #   403       → proxy blocked it (did not reach) = prevented;
-            #   None      → request did not complete (attack chain broken by an early
-            #               block, the step never reached the crit op) = also NOT
-            #               reached = prevented;
-            #   real backend response (2xx/3xx/5xx, not 403) → REACHED = leaked.
-            # (None as prevented makes baseline↔defended symmetric: the same number of
-            #  crit steps, differing only in HOW MANY reached Helios.)
-            if status == 403 or status is None:
+            if _dis_blocked(r) or status is None:
                 crit_blocked += 1
-                crit_steps.append(f"{op_name}:{'БЛОК' if status == 403 else 'обірвано'}")
-            else:
+                crit_steps.append(f"{op_name}:{'DIS-БЛОК' if status == 403 else 'обірвано'}")
+            elif status in (200, 201, 302):
                 crit_reached += 1
-                crit_steps.append(f"{op_name}:{status}")
+                crit_steps.append(f"{op_name}:{status}⚠витік")
+            else:
+                crit_other += 1
+                crit_steps.append(f"{op_name}:{status}(не виконано)")
     return {
         "attack_class":  report.get("attack_class"),
         "vector":        report.get("vector", "system"),
         "agent_verdict": report.get("verdict", "?"),
         "crit_blocked":  crit_blocked,
         "crit_reached":  crit_reached,
-        "crit_total":    crit_blocked + crit_reached,
+        "crit_other":    crit_other,
+        "crit_total":    crit_blocked + crit_reached + crit_other,
         "crit_steps":    crit_steps,
     }
 
@@ -103,14 +119,16 @@ def analyze_report(report: dict) -> dict:
 def classify_defense(a: dict) -> str:
     """
     Final defense status for an attack:
-      NEUTRALIZED — all critical operations blocked
-      LEAKED      — some critical operations reached Helios
-      OFF_SERVER  — attack outside the server-proxy zone (no critical HTTP)
+      NEUTRALIZED — DIS blocked the critical op(s), none leaked
+      PARTIAL_BLOCK — some blocked, some leaked
+      LEAKED      — a critical op reached Helios and executed (2xx/3xx), no DIS block
+      OFF_SERVER / NO_CRITICAL — no critical HTTP that either leaked or was DIS-blocked
     """
     if a["crit_total"] == 0:
         return "OFF_SERVER" if a["attack_class"] in OFF_SERVER_CLASSES else "NO_CRITICAL"
     if a["crit_reached"] == 0:
-        return "NEUTRALIZED"
+        # no proven leak; a DIS block present → neutralized, else nothing decisive
+        return "NEUTRALIZED" if a["crit_blocked"] > 0 else "NO_CRITICAL"
     if a["crit_blocked"] > 0:
         return "PARTIAL_BLOCK"
     return "LEAKED"
@@ -207,11 +225,14 @@ def main():
     total       = len(analyses)
     crit_blocked_total = sum(a["crit_blocked"] for a in analyses)
     crit_reached_total = sum(a["crit_reached"] for a in analyses)
+    crit_other_total   = sum(a.get("crit_other", 0) for a in analyses)
 
     print("  📊 ПІДСУМОК ЗАХИСТУ")
-    print(f"     🛡  Нейтралізовано (критична операція заблокована): {neutralized}/{total}")
+    print(f"     🛡  Нейтралізовано (критична операція заблокована DIS): {neutralized}/{total}")
     print(f"     🌐 Поза зоною серверного захисту (мережа/браузер/люди): {off_server}/{total}")
-    print(f"     🔴 Пропущено (атака дійшла до Helios): {leaked}/{total}")
+    print(f"     🔴 Пропущено (крит-оп ВИКОНАЛАСЬ у Helios, 2xx/3xx): {leaked}/{total}")
+    if crit_other_total:
+        print(f"     ◻️  Крит-оп не виконано і не DIS-блок (404/5xx/не-DIS 403): {crit_other_total}")
     # Explicit list of "off-server" — so a reviewer does not read them as "leaked":
     # these are network/browser/human-level attacks that the server proxy does NOT
     # intercept by definition (not a "hole" but a boundary of applicability).
@@ -253,6 +274,7 @@ def main():
             "leaked":      leaked,
             "critical_ops_blocked":  crit_blocked_total,
             "critical_ops_reached":  crit_reached_total,
+            "critical_ops_other":    crit_other_total,
         },
         "proxy_blocks": len(blocks),
         "proxy_by_tier": dict(Counter(b.get("tier", "?") for b in blocks)),

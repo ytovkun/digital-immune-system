@@ -66,6 +66,13 @@ MAX_BODY_BYTES = _proxy_cfg.get("max_body_bytes", 5 * 1024 * 1024)   # 5 МБ
 # would exhaust the worker pool (thread-starvation DoS). 10s is a reasonable ceiling
 # for e-voting (view/cast are fast); slower = either an overloaded Helios or an attack.
 FORWARD_TIMEOUT_SEC = _proxy_cfg.get("forward_timeout_sec", 10)
+# Number of TRUSTED reverse-proxy/LB hops in front of this proxy. The real client
+# IP is the entry the LAST trusted hop appended — counted from the RIGHT. The
+# LEFTMOST XFF entries are client-supplied and spoofable, so trusting the first one
+# lets an attacker forge/rotate the source and evade per-IP rate/tempo/L2-budget.
+# On the test stand XFF carries a single value → this equals that value. In prod
+# set it to the number of proxies/LBs you actually run in front.
+XFF_TRUSTED_HOPS = _proxy_cfg.get("xff_trusted_hops", 1)
 AI_BODY_PREVIEW = 2000          # скільки байтів тіла подавати ШІ
 BLOCKS_LOG     = LOGS_DIR / "immune_blocks.jsonl"
 
@@ -252,14 +259,17 @@ def log_decision(entry: dict):
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
-def _parse_client_ip(xff_header: str, remote_addr: str) -> str:
-    """Extract the client IP from X-Forwarded-For. XFF may be a chain
-    'client, proxy1, proxy2' — we take the FIRST (the real client), otherwise the
-    same client with different proxy tails would split the tracking."""
+def _parse_client_ip(xff_header: str, remote_addr: str, trusted_hops: int = None) -> str:
+    """Extract the client IP from X-Forwarded-For as attested by the LAST TRUSTED
+    hop. XFF is 'client, proxy1, proxy2'; the leftmost entries are client-controlled
+    (spoofable), so we count XFF_TRUSTED_HOPS from the RIGHT rather than trusting the
+    first. On the stand XFF has one value → that value. In prod this blocks XFF-rotation
+    evasion of per-IP rate/tempo/L2-budget."""
+    hops = XFF_TRUSTED_HOPS if trusted_hops is None else trusted_hops
     if xff_header:
-        first = xff_header.split(",")[0].strip()
-        if first:
-            return first
+        parts = [p.strip() for p in xff_header.split(",") if p.strip()]
+        if parts:
+            return parts[max(0, len(parts) - max(1, hops))]
     return remote_addr or "127.0.0.1"
 
 

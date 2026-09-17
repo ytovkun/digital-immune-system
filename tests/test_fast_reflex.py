@@ -81,12 +81,12 @@ def test_ballots_harvest_rate_limited():
 
 def test_learned_signature_blocks_at_l1():
     r = make()
-    # before learning, a new pattern passes (not BLOCK)
-    d0 = r.evaluate("GET", "/helios/x/foo?w=zzqx", {}, "8.8.8.8", "s")
+    # before learning, a new anomaly is routed to the AI (INSPECT), not L1-blocked
+    d0 = r.evaluate("GET", "/helios/x/foo?w=<b onmouseover=x()>", {}, "8.8.8.8", "s")
     assert d0["verdict"] != "BLOCK"
-    # the AI taught L1 the signature
-    assert r.add_learned_signature("zzqx", "novel_attack") is True
-    d1 = r.evaluate("GET", "/helios/x/foo?w=zzqx", {}, "8.8.8.8", "s")
+    # the AI taught L1 a VALIDATED malicious signature (an anomaly marker)
+    assert r.add_learned_signature("onmouseover=", "novel_attack") is True
+    d1 = r.evaluate("GET", "/helios/x/foo?w=<b onmouseover=x()>", {}, "8.8.8.8", "s")
     assert d1["verdict"] == "BLOCK"
     assert d1["attack_class"] == "novel_attack"
     assert "learned" in d1["signal"]
@@ -96,6 +96,21 @@ def test_learned_signature_rejects_too_short():
     r = make()
     assert r.add_learned_signature("ab", "x") is False    # <4 chars — rejected
     assert r.add_learned_signature("", "x") is False
+
+
+def test_learned_signature_rejects_legit_route_autoimmune_guard():
+    # A model-returned signature that echoes a benign route (e.g. "/cast") must NOT
+    # be learned — otherwise L1 would block ALL votes for every voter (self-DoS).
+    r = make()
+    assert r.add_learned_signature("/cast", "x") is False
+    assert r.add_learned_signature("/cast_confirm", "x") is False
+    assert r.add_learned_signature("password_voter_login", "x") is False
+    assert r.add_learned_signature("/view", "x") is False
+    # a genuine attack marker is still learnable
+    assert r.add_learned_signature("onmouseover=", "xss") is True
+    # ...and it does NOT block a legit /cast (the poison token was rejected)
+    d = r.evaluate("POST", "/helios/elections/e/cast", {}, "1.1.1.1", "s")
+    assert d.get("signal") != "learned_signature"
 
 
 # ─── UNAMBIGUOUS payload → deterministic L1 BLOCK (0ms, no AI) ────────────────

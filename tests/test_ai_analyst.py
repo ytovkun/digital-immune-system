@@ -202,3 +202,23 @@ def test_cache_ttl_expiry(monkeypatch):
     entry = a._cache.get("sigX")
     verdict_dict, expiry = entry
     assert now >= expiry   # confirm it is expired
+
+
+# ─── Privacy: no voter PII leaves in the prompt ───────────────────────────────
+
+def test_redact_pii_for_prompt_masks_uuid_and_credentials():
+    from ai_analyst import _redact_pii_for_prompt, _ip_pseudonym
+    out = _redact_pii_for_prompt("/helios/elections/c88cfaeb-abc0-4440-a165-a77cab2951f2/cast")
+    assert "c88cfaeb" not in out and "{uuid}" in out
+    out2 = _redact_pii_for_prompt("voter_id=voter4&password=s3cr3t")
+    assert "s3cr3t" not in out2 and "voter4" not in out2 and "password=" in out2
+    ip = _ip_pseudonym("203.0.113.7")
+    assert "203.0.113.7" not in ip and ip.startswith("ip:")
+
+
+def test_build_prompt_does_not_leak_password_or_raw_ip():
+    a = AIAnalyst()
+    prompt = a._build_prompt("POST", "/auth/password/login", {"User-Agent": "x"},
+                             "voter_id=voter4&password=hunter2", {"client_ip": "203.0.113.9"})
+    assert "hunter2" not in prompt
+    assert "203.0.113.9" not in prompt

@@ -16,6 +16,7 @@ import os
 import re
 import sys
 import time
+import itertools
 import logging
 import requests
 from datetime import datetime
@@ -44,6 +45,30 @@ REPORTS_DIR     = str(PROJECT_ROOT / _cfg.get("paths", {}).get("reports_dir", "r
 LOGS_DIR        = str(PROJECT_ROOT / _cfg.get("paths", {}).get("logs_dir", "logs"))
 STEP_DELAY      = _cfg.get("run", {}).get("step_delay_sec", 0.3)
 HTTP_TIMEOUT    = _cfg.get("run", {}).get("http_timeout_sec", 10)
+
+# Neutral browser UA (env-overridable). MUST NOT self-identify as the red-team
+# harness: a "RedTeamAgent" UA leaks into the L2 prompt and lets the model block by
+# the marker rather than by attack semantics (contaminates the campaign — reviewer #3).
+REDTEAM_UA = os.environ.get(
+    "REDTEAM_UA",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+
+# Distinct source IP per scenario (via X-Forwarded-For): each scenario is a DIFFERENT
+# attacker, so rate/tempo/L2-budget/trajectory do NOT accumulate across scenarios
+# (that accumulation was a stand artifact, not real defense strength). A fixed
+# REDTEAM_XFF overrides this (all scenarios from one IP) if ever needed.
+_scenario_ip_counter = itertools.count(11)
+
+
+def _next_scenario_ip() -> str:
+    return os.environ.get("REDTEAM_XFF") or f"198.51.100.{next(_scenario_ip_counter) % 250 + 1}"
+
+# Neutralize leftover LLM context-placeholders like "<from step1>" / "<csrftoken step3>"
+# (unresolved cross-step references the generator emitted) so they do not leak into the
+# request or the L2 prompt. Targeted at angle-brackets containing "stepN" — never matches
+# a real XSS payload like "<script>" or "<svg onload=…>".
+_CONTEXT_PLACEHOLDER_RE = re.compile(r"<[^>]*step\s*\d[^>]*>", re.I)
 
 os.makedirs(LOGS_DIR, exist_ok=True)
 os.makedirs(REPORTS_DIR, exist_ok=True)
@@ -229,6 +254,9 @@ def interpolate(value, context: dict):
     for k, v in context.items():
         if isinstance(v, str):
             value = value.replace(f"{{{k}}}", v)
+    # drop unresolved cross-step placeholders ("<from step1>") so they neither hit
+    # the wire nor the L2 prompt; XSS payloads (no "stepN") are untouched
+    value = _CONTEXT_PLACEHOLDER_RE.sub("", value)
     return value
 
 
@@ -415,7 +443,10 @@ def execute_scenario(scenario: dict, base_url: str = None) -> dict:
     }, severity="WARNING")
 
     session = requests.Session()
-    session.headers.update({"User-Agent": "Mozilla/5.0 (RedTeamAgent/2.0)"})
+    # neutral UA + a distinct source IP per scenario (no self-marking, no cross-scenario
+    # accumulation of rate/tempo/budget) — see REDTEAM_UA / _next_scenario_ip
+    src_ip = _next_scenario_ip()
+    session.headers.update({"User-Agent": REDTEAM_UA, "X-Forwarded-For": src_ip})
 
     # Base context — substituted into the {placeholders} of all steps
     voters  = _cfg.get("helios", {}).get("voters", {})

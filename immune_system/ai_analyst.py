@@ -36,6 +36,7 @@ from threat_patterns import (
     is_pattern_malicious as _is_pattern_malicious,
     anomaly_payload_match,
     detect_injection,
+    is_malicious_signature,
 )
 
 # Protecting the AI itself from a cache-busting flood: a limit on EXPENSIVE Claude
@@ -46,6 +47,13 @@ AI_CALL_WINDOW_SEC = 60.0     # за вікно
 MAX_CACHE_SIZE = 5000         # межа LRU-кешу вердиктів (захист від memory-DoS)
 MAX_TRACKED_IPS = 10000       # межа словника IP-вікон
 CACHE_TTL_SEC = 300.0         # час життя кешованого вердикту (захист від застарілих рішень)
+
+# Hard bounds on a single Claude call. The SDK default timeout is very large
+# (minutes) and it auto-retries — without an explicit cap, a degraded API could
+# hang a voter's request. On timeout/error the analyze() path is fail-closed for
+# critical operations, so a bounded timeout is safe and prevents indefinite hangs.
+JUDGE_TIMEOUT_SEC = 45.0      # per-call hard timeout
+JUDGE_MAX_RETRIES = 1         # bounded retries (default SDK retries stack latency)
 
 # Single source of the default model (in sync with config.json → claude.model)
 DEFAULT_MODEL = "claude-opus-4-8"
@@ -185,6 +193,36 @@ def _sanitize(text: str, max_len: int = 300) -> tuple:
     return clean, injection
 
 
+# Privacy: the prompt is sent to an EXTERNAL API, so voter PII must not leak.
+# Mask the voter/ballot UUID in the path and redact credential VALUES in the body
+# (a tempo flag on POST /auth/.../login would otherwise send voter_id=…&password=…).
+# The AI still sees the route structure, payloads and "password=…" presence — enough
+# to judge intent — but never the actual secret.
+_PII_UUID_RE = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
+_PII_CRED_RE = re.compile(
+    r"(?i)\b(password|passwd|pwd|voter_id|voter_login_id|token|secret|api[_-]?key)"
+    r"(=|\"\s*:\s*\"?)([^&\s\"']+)")
+
+
+def _redact_pii_for_prompt(text: str) -> str:
+    """Mask voter UUIDs and redact credential values before sending to the API."""
+    if not text:
+        return text
+    t = _PII_UUID_RE.sub("{uuid}", str(text))
+    t = _PII_CRED_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}{{redacted}}", t)
+    return t
+
+
+def _ip_pseudonym(ip: str) -> str:
+    """Stable short pseudonym for an IP — the AI reasons about the actor, not the
+    real address (which could deanonymize a voter). Aggregated signals (recent_count,
+    fp_distinct_ips) already carry the cross-request correlation."""
+    if not ip or ip == "?":
+        return "?"
+    return "ip:" + hashlib.sha1(str(ip).encode("utf-8", "replace")).hexdigest()[:8]
+
+
 class PersistentMemory:
     """
     Long-term immune memory (SQLite). Stores ONLY context-independent verdicts
@@ -278,7 +316,9 @@ class AIAnalyst:
         if self.enabled:
             try:
                 import anthropic
-                self._client = anthropic.Anthropic(api_key=self.api_key)
+                self._client = anthropic.Anthropic(api_key=self.api_key,
+                                                   timeout=JUDGE_TIMEOUT_SEC,
+                                                   max_retries=JUDGE_MAX_RETRIES)
             except Exception as e:
                 logger.warning("anthropic SDK недоступний (%s: %s) — ШІ-рівень "
                                "вимкнено (діє fail-closed на критичних)",
@@ -447,16 +487,22 @@ class AIAnalyst:
         #    (b) extends adaptive→innate to new patterns (onerror=/<iframe/…) not in the
         #    narrow hard set — this is exactly what gives re-detection memory.
         cand = (result.get("ai_signature") or "").strip().lower()
-        ai_sig_in_path = 4 <= len(cand) <= 60 and cand in path.lower()
-        # cache if the malicious signal is in the PATH/QUERY (safe — query is in the cache signature):
-        # a hard pattern, OR an anomaly marker (what routed it to the AI), OR the AI signature.
-        path_based = (ai_sig_in_path or _is_pattern_malicious(path, "")
-                      or anomaly_payload_match(path.lower()))
+        # The AI signature is trusted for caching/learning ONLY if it is a VALIDATED
+        # malicious marker that appears in the path — is_malicious_signature() rejects
+        # benign route echoes like "/cast" (autoimmune-poisoning guard) and requires the
+        # token to be a real attack marker.
+        sig_malicious_in_path = bool(cand) and cand in path.lower() and is_malicious_signature(cand)
+        # Cache ONLY context-independent verdicts: a hard/injection pattern in the path,
+        # OR a validated-malicious AI signature in the path. NOT a bare anomaly marker
+        # (', ", ;) and NOT a purely behavioral/trajectory decision — caching those would
+        # poison the cache for future LEGIT requests on the same path.
+        path_based = sig_malicious_in_path or _is_pattern_malicious(path, "")
         if verdict == "BLOCK" and path_based:
             verdict_dict = {k: result[k] for k in
                             ("verdict", "attack_class", "confidence", "reasoning")}
-            # L1 learning: the token must be in the PATH (L1 matches only the path), not the body.
-            if ai_sig_in_path:
+            # L1 learning: only a validated-malicious signature present in the PATH
+            # (L1 matches path only). add_learned_signature re-checks this as a hard gate.
+            if sig_malicious_in_path:
                 result["learnable_signature"] = cand
             expiry = now + CACHE_TTL_SEC
             with self._lock:
@@ -517,6 +563,9 @@ class AIAnalyst:
         pth, inj_pth = _sanitize(path, 200)
         bdy, inj_bdy = _sanitize(body, 300)
         injection_detected = inj_ua or inj_ref or inj_pth or inj_bdy
+        # Privacy: strip voter PII (UUID) and credential values before the API call
+        pth = _redact_pii_for_prompt(pth)
+        bdy = _redact_pii_for_prompt(bdy)
 
         inj_note = ""
         if injection_detected:
@@ -530,7 +579,7 @@ class AIAnalyst:
 
 ДОВІРЕНІ серверні сигнали (виміряні проксі, НЕ підробити клієнту):
   Метод: {method}
-  IP: {behavior.get('client_ip', '?')}
+  IP (псевдонім): {_ip_pseudonym(behavior.get('client_ip', '?'))}
   Запитів від IP за 10с: {behavior.get('recent_count', '?')}
   POST /cast від сесії за 2с: {behavior.get('cast_count', 0)}
   Сесія ПЕРЕВІРЕНА в Helios (справжня автентифікація): {behavior.get('session_validated', '?')}

@@ -150,6 +150,35 @@ def is_pattern_malicious(path: str, body: str) -> bool:
     return False
 
 
+# Legit route segments that must NEVER become a learned L1 signature. An AI
+# signature echoing a benign path (e.g. "/cast") would, once learned, block ALL
+# such traffic for every voter — an "autoimmune" self-DoS. The signature field
+# comes from the model under influence of untrusted input, so this is an attack
+# vector, not just a theoretical edge case.
+LEGIT_ROUTE_SEGMENTS = (
+    "/cast", "/cast_confirm", "/vote", "/view", "/voters", "/ballots",
+    "/trustees", "/auth", "/login", "password_voter_login", "/result",
+    "/helios", "/elections", "/encrypt_tally", "/freeze", "/upload-decryption",
+    "/combine_decryptions",
+)
+
+
+def is_malicious_signature(sig: str) -> bool:
+    """
+    Whether a token is SAFE to learn as an L1 deterministic-block signature.
+    Guard against autoimmune poisoning: the token must (a) be 4–60 chars, (b) NOT
+    be / contain a legitimate route segment, and (c) be recognizably malicious on
+    its own (an anomaly/hard-malicious marker). A benign path like "/cast" fails
+    (c) and (b); a real attack marker like "onmouseover=" or "union select" passes.
+    """
+    s = (sig or "").strip().lower()
+    if not (4 <= len(s) <= 60):
+        return False
+    if any(seg in s or s in seg for seg in LEGIT_ROUTE_SEGMENTS):
+        return False
+    return anomaly_payload_match(s) or is_pattern_malicious(s, "")
+
+
 def detect_injection(text: str) -> bool:
     """Whether the text contains prompt-injection attempt markers."""
     if not text:

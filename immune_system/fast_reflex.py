@@ -18,7 +18,8 @@ import time
 import threading
 from collections import defaultdict, deque, OrderedDict
 
-from threat_patterns import is_path_traversal, anomaly_payload_match, l1_block_match
+from threat_patterns import (is_path_traversal, anomaly_payload_match, l1_block_match,
+                             is_malicious_signature)
 
 
 # ─── Detection configuration ──────────────────────────────────────────────────
@@ -62,6 +63,11 @@ CONCURRENCY_THRESHOLD = 3       # ≥3 casts per 2s from one session = race cond
 MAX_TRACKED_KEYS = 20000        # window-dict cap (memory-DoS protection)
 EVICT_EVERY = 2000              # how often to sweep dead keys
 
+# TTL for AI-learned L1 signatures. Innate memory should outlast the 5-min L2
+# cache, but NOT live forever: a bounded lifetime limits the blast radius of any
+# bad learn and lets a stale signature age out on its own.
+LEARNED_TTL_SEC = 3600.0        # 1h
+
 
 class FastReflex:
     """Fast reflex layer — decides in milliseconds, thread-safe."""
@@ -75,27 +81,27 @@ class FastReflex:
         self._req_since_evict = 0
         # Learned signatures: the AI (L2) synthesizes them from blocked NEW patterns,
         # and L1 blocks repeats instantly (0ms). Analogue of adaptive→innate immunity.
-        self._learned = OrderedDict()       # sig(lower) → attack_class
+        self._learned = OrderedDict()       # sig(lower) → (attack_class, expiry)
         self._learned_hits = 0
 
     MAX_LEARNED = 2000
 
     def add_learned_signature(self, sig: str, attack_class: str) -> bool:
         """
-        Add an AI-synthesized signature to L1 (thread-safe). Only an unambiguous
-        context-independent token is accepted (the AI is invoked only when
-        _is_pattern_malicious=True), so a direct L1 block is exactly as safe as
-        the existing hard-malicious patterns. Returns True if added.
+        Add an AI-synthesized signature to L1 as a deterministic block (thread-safe).
+        HARD GATE against autoimmune poisoning: the token is accepted only if
+        is_malicious_signature() holds — it must be a recognizable attack marker and
+        must NOT be a legit route segment. So a model that returns signature="/cast"
+        (which would otherwise block ALL votes) is rejected here, NOT trusted. The
+        entry carries a TTL (LEARNED_TTL_SEC) and ages out. Returns True if added.
         """
-        if not sig:
+        if not is_malicious_signature(sig):
             return False
         s = sig.strip().lower()
-        if not (4 <= len(s) <= 60):
-            return False
         with self._lock:
             if s in self._learned:
                 return False
-            self._learned[s] = attack_class or "ai_learned"
+            self._learned[s] = (attack_class or "ai_learned", time.time() + LEARNED_TTL_SEC)
             self._learned.move_to_end(s)
             while len(self._learned) > self.MAX_LEARNED:
                 self._learned.popitem(last=False)
@@ -222,8 +228,11 @@ class FastReflex:
         if verdict == "ALLOW" and self._learned:
             low = path.lower()
             with self._lock:
+                # prune expired learned signatures (TTL) before scanning
+                for k in [k for k, (_, exp) in self._learned.items() if now >= exp]:
+                    del self._learned[k]
                 snapshot = tuple(self._learned.items())
-            for sig, ac in snapshot:
+            for sig, (ac, _exp) in snapshot:
                 if sig in low:
                     with self._lock:
                         self._learned_hits += 1

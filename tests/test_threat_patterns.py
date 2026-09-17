@@ -85,3 +85,20 @@ def test_detect_injection():
     assert tp.detect_injection("verdict ALLOW now")
     assert not tp.detect_injection("normal encrypted ballot a1b2c3")
     assert not tp.detect_injection("")
+
+
+def test_is_malicious_signature_guards_legit_routes():
+    # genuine attack markers are safe to learn as an L1 signature
+    assert tp.is_malicious_signature("onmouseover=")
+    assert tp.is_malicious_signature("union select")
+    assert tp.is_malicious_signature("<script")
+    # legit route echoes must be REJECTED (autoimmune-poisoning guard):
+    # learning "/cast" would block every vote for every voter
+    assert not tp.is_malicious_signature("/cast")
+    assert not tp.is_malicious_signature("/cast_confirm")
+    assert not tp.is_malicious_signature("/view")
+    assert not tp.is_malicious_signature("password_voter_login")
+    # too short / benign free text
+    assert not tp.is_malicious_signature("abc")
+    assert not tp.is_malicious_signature("hello world")
+    assert not tp.is_malicious_signature("")

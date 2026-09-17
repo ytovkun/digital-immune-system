@@ -65,9 +65,13 @@ def test_body_backstop_blocks_despite_ai_allow(monkeypatch):
 
 # ─── #5 _client_ip — the first IP of the XFF chain ────────────────────────────
 
-def test_parse_client_ip_takes_first_hop():
-    assert proxy._parse_client_ip("1.2.3.4, 10.0.0.1, 10.0.0.2", "9.9.9.9") == "1.2.3.4"
-    assert proxy._parse_client_ip("  5.5.5.5  ", "9.9.9.9") == "5.5.5.5"
+def test_parse_client_ip_takes_rightmost_trusted_hop():
+    # take the LAST trusted hop's entry (rightmost), NOT the spoofable leftmost —
+    # otherwise an attacker forges the first XFF element to evade per-IP tracking
+    assert proxy._parse_client_ip("1.2.3.4, 10.0.0.1, 10.0.0.2", "9.9.9.9") == "10.0.0.2"
+    assert proxy._parse_client_ip("  5.5.5.5  ", "9.9.9.9") == "5.5.5.5"   # single value → that value
+    # with 2 trusted hops in front, take the 2nd entry from the right
+    assert proxy._parse_client_ip("1.2.3.4, 10.0.0.1, 10.0.0.2", "9", trusted_hops=2) == "10.0.0.1"
 
 
 def test_parse_client_ip_fallback_to_remote():
