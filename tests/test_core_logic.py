@@ -48,9 +48,11 @@ def test_execution_factor_blocked_low():
 
 
 def test_score_report_bounds_and_level():
+    # tally_manipulation is Critical in the class catalog (Table 4.3); severity now
+    # comes from the catalog, NOT the per-report field (so a mutation cannot inflate it)
     report = {
-        "attack_class": "ballot_stuffing", "verdict": "EXECUTED",
-        "weighted_success_rate": 100, "severity": "Critical",
+        "attack_class": "tally_manipulation", "verdict": "EXECUTED",
+        "weighted_success_rate": 100, "severity": "Low",   # ignored — catalog wins
         "mitre_technique_id": "T1565.001", "linddun_category": "Linkability",
         "affected_cia": {"confidentiality": "High", "integrity": "Critical",
                          "availability": "High"},
@@ -58,8 +60,17 @@ def test_score_report_bounds_and_level():
     out = rs.score_report(report)
     assert 0 <= out["composite_score"] <= 10
     assert out["risk_level"] in ("CRITICAL", "HIGH", "MEDIUM", "LOW")
-    # critical, executed attack with high CIA → should be high risk
+    # critical (catalog), executed attack with high CIA → should be high risk
     assert out["risk_level"] in ("CRITICAL", "HIGH")
+    assert out["severity_catalog"] == "Critical"   # catalog applied, not the "Low" field
+
+
+def test_catalog_severity_overrides_report_field():
+    # an adaptive mutation cannot inflate severity: the class catalog is authoritative
+    hi = rs.catalog_severity({"attack_class": "ballot_stuffing", "severity": "Critical"})
+    assert hi == "High"                              # Table 4.3, not the "Critical" field
+    lo = rs.catalog_severity({"attack_class": "dos_zk_flood", "severity": "Critical"})
+    assert lo == "Medium"
 
 
 def test_score_report_blocked_lower_than_executed():

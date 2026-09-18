@@ -19,6 +19,7 @@ Run:      python immune_system/immune_proxy.py
 Metrics:  GET http://localhost:8000/__immune__/stats
 """
 
+import os
 import sys
 import json
 import re
@@ -806,7 +807,11 @@ def reset_adaptive_state():
         _fp_history.clear()
         _actor_history.clear()
         _session_cache.clear()
-    return jsonify({"reset": True, "learned_cleared": learned, "cache_cleared": cache})
+        owners = len(_ballot_owner)
+        _ballot_owner.clear()          # else a voter owned in a prior experiment would
+        _session_voter.clear()         # be false-blocked when they vote from a new IP
+    return jsonify({"reset": True, "learned_cleared": learned,
+                    "cache_cleared": cache, "ballot_owners_cleared": owners})
 
 
 @app.route("/__immune__/metrics", methods=["GET"])

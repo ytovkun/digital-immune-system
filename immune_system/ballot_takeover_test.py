@@ -85,7 +85,35 @@ def cast_full_flow(voter_id: str, password: str, src_ip: str, choice: int) -> di
             ac = r.json().get("attack_class")
         except ValueError:
             ac = "?"
-    return {"blocked": blocked, "status": r.status_code, "attack_class": ac}
+    return {"blocked": blocked, "status": r.status_code, "attack_class": ac, "session": s}
+
+
+VOTER_UUIDS = _cfg.get("helios", {}).get("voter_uuids", {})
+
+
+def _read_vote_hash(voter_id: str, password: str, src_ip: str):
+    """Read the victim's current vote_hash — ground truth for whether the vote was
+    actually changed. Uses a FRESH election-scoped login and reads RAW Helios :8001
+    directly (bypass the proxy: its exfil/coarsen handling can rewrite the ballots
+    response, and a read is not part of the attack we are measuring)."""
+    vu = VOTER_UUIDS.get(voter_id)
+    base = "http://localhost:8001"
+    s = requests.Session()
+    s.headers.update({"User-Agent": BROWSER_UA, "X-Forwarded-For": src_ip})
+    lu = f"{base}/helios/elections/{UUID}/password_voter_login"
+    try:
+        tok = _csrf(s, lu)
+        s.post(lu, data={"voter_id": voter_id, "password": password,
+                         "csrfmiddlewaretoken": tok, "return_url": ""},
+               headers={"Referer": lu}, allow_redirects=False, timeout=15)
+        r = s.get(f"{base}/helios/elections/{UUID}/ballots/?limit=500",
+                  allow_redirects=False, timeout=10)
+        for b in r.json():
+            if b.get("voter_uuid") == vu:
+                return b.get("vote_hash")
+    except (ValueError, requests.exceptions.RequestException):
+        pass
+    return None
 
 
 def main():
@@ -113,6 +141,8 @@ def main():
     legit = cast_full_flow(voter_id, password, VICTIM_IP, choice=0)
     print(f"    {'🔴 заблоковано (неочікувано!)' if legit['blocked'] else '✅ пройшов'}  "
           f"(HTTP {legit['status']})")
+    hash_before = _read_vote_hash(voter_id, password, VICTIM_IP)
+    print(f"    vote_hash жертви після легіт-голосу: {str(hash_before)[:24]}…")
     time.sleep(1.0)
 
     print(f"\n  ▶ КРОК 2 — АТАКА: ті самі вкрадені дані, ІНШЕ джерело {ATTACKER_IP} (non-self)")
@@ -122,9 +152,24 @@ def main():
     else:
         print(f"    🔴 ПРОПУЩЕНО — підміну голосу не виявлено  (HTTP {attack['status']})")
 
+    # ground truth: did the ballot actually change? (fresh read, may be unavailable)
+    hash_after = _read_vote_hash(voter_id, password, VICTIM_IP)
+    if hash_before is None or hash_after is None:
+        hash_state = None          # could not verify — do NOT fail detection on it
+        hash_txt = "n/a (не вдалося прочитати)"
+    elif hash_before == hash_after:
+        hash_state = True
+        hash_txt = "НЕ ЗМІНЕНО ✅ (цілісність збережена)"
+    else:
+        hash_state = False
+        hash_txt = "ЗМІНЕНО 🔴"
+    print(f"    vote_hash жертви після атаки:       {str(hash_after)[:24]}…  → {hash_txt}")
+
     print("\n" + "=" * 78)
+    # primary evidence = the block; the vote_hash confirms it but its absence
+    # (read failure) must not turn a real block into "not detected"
     detected = (not legit["blocked"]) and attack["blocked"] \
-        and attack["attack_class"] == "vote_manipulation"
+        and attack["attack_class"] == "vote_manipulation" and hash_state is not False
     if detected:
         print("  ✅ ЦІС ОПОЗНАВ атаку: легітимний голос пройшов, а перезапис бюлетеня")
         print("     з іншого джерела заблоковано як vote_manipulation (ballot-ownership).")
@@ -135,11 +180,13 @@ def main():
         print("     (bootstrap ownership) і що атакуюче джерело відрізняється.")
     print("=" * 78)
 
+    _hash_label = {True: "незмінний (цілісність)", False: "ЗМІНЕНО", None: "n/a"}[hash_state]
     save_security_result(
         key="ballot_takeover", label="Виявлення підміни голосу (ballot-ownership)",
         value="виявлено" if detected else "не виявлено",
         detail=(f"легіт={'пройшов' if not legit['blocked'] else 'заблок.'}, "
-                f"атака={'блок vote_manipulation' if attack['blocked'] else 'пройшла'}"),
+                f"атака={'блок vote_manipulation' if attack['blocked'] else 'пройшла'}, "
+                f"vote_hash={_hash_label}"),
         passed=detected, source="ballot_takeover_test.py")
 
 

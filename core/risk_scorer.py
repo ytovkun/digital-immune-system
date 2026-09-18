@@ -50,6 +50,35 @@ SEVERITY_MAP = {
     "L": 0.25,
 }
 
+# Authoritative severity CATALOG per attack_class (dissertation Table 4.3). Severity
+# is taken from HERE, not from the per-report "severity" field — that field is set by
+# the generating LLM and an adaptive (gen-1) mutation would otherwise re-label itself
+# Critical and inflate the score after mutation (reviewer). Keying by class makes
+# gen-0 and gen-1 share one severity, so a score change reflects real executability,
+# not a re-labelling. Edit these to match Table 4.3 exactly.
+CATALOG_SEVERITY = {
+    "ballot_stuffing":                      "High",      # Table 4.3
+    "dos_zk_flood":                         "Medium",    # Table 4.3
+    "vote_change_stolen_creds":             "Critical",  # direct ballot integrity (B-full)
+    "tally_manipulation":                   "Critical",
+    "csrf_trustee_takeover":                "Critical",
+    "session_forgery":                      "High",
+    "voter_phishing_credential":            "High",
+    "voter_device_js_injection":            "High",
+    "voter_social_engineering_vote_change": "Medium",
+    "voter_coercion_receipt":               "Medium",
+    "voter_suppression_targeted":           "Medium",
+    "voter_timing_deanonymization":         "Low",
+}
+
+
+def catalog_severity(report: dict) -> str:
+    """Severity from the class catalog (Table 4.3), falling back to the report's own
+    field only for an unknown class. Case-normalized."""
+    ac = report.get("attack_class")
+    sev = CATALOG_SEVERITY.get(ac) or report.get("severity", "High")
+    return str(sev).capitalize()
+
 VERDICT_FACTOR = {
     "EXECUTED":   1.00,
     "PARTIAL":    0.65,
@@ -128,7 +157,7 @@ def score_report(report: dict) -> dict:
     cia     = cia_score(report.get("affected_cia", {}))
     linddun = linddun_score(report.get("linddun_category", "L"))
     exec_f   = execution_factor(report)
-    severity = SEVERITY_MAP.get(report.get("severity", "High"), 0.75)
+    severity = SEVERITY_MAP.get(catalog_severity(report), 0.75)
     mitre_id  = report.get("mitre_technique_id", "")
     mitre_b   = next((v for k, v in MITRE_BONUS_MAP.items() if mitre_id.startswith(k)), 0.05)
     raw   = (cia * 0.35 + linddun * 0.25 + mitre_b * 0.15 + exec_f * 0.25) * severity
@@ -150,6 +179,7 @@ def score_report(report: dict) -> dict:
         "mitre_technique_name":   report.get("mitre_technique_name", ""),
         "linddun_category":       report.get("linddun_category", ""),
         "severity_declared":      report.get("severity", ""),
+        "severity_catalog":       catalog_severity(report),   # what the score used (Table 4.3)
         "verdict":                report.get("verdict", ""),
         "http_success_rate":      report.get("http_success_rate", 0),
         "weighted_success_rate":  report.get("weighted_success_rate", 0),

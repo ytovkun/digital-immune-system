@@ -556,6 +556,18 @@ def execute_scenario(scenario: dict, base_url: str = None) -> dict:
         expected    = step.get("expected_result", "")
         attacker_note = step.get("attacker_note", "")
 
+        # Multi-actor support in one scenario (e.g. B-full: the victim votes first to
+        # establish ballot ownership, THEN the attacker overwrites from another source).
+        # "new_session": drop cookies (a different actor). "x_forwarded_for": switch the
+        # source IP from this step onward.
+        if step.get("new_session"):
+            session = requests.Session()
+            session.headers.update({"User-Agent": REDTEAM_UA, "X-Forwarded-For": src_ip})
+        if step.get("x_forwarded_for"):
+            src_ip = interpolate(str(step["x_forwarded_for"]), context)
+            session.headers["X-Forwarded-For"] = src_ip
+            context["src_ip"] = src_ip
+
         print(f"\n  [{step_num:02d}] [{phase}] {action}")
         endpoint_display = step.get("endpoint") or "LOCAL"
         if endpoint_display and len(endpoint_display) > 60:

@@ -44,7 +44,10 @@ def _latest(sub, pat):
 
 
 def collect() -> dict:
-    b = _latest("benchmark", "benchmark_*.json") or {}
+    # a SINGLE benchmark run (benchmark_2*.json — exclude benchmark_aggregate_*.json,
+    # which has no metrics block and would zero the manifest)
+    b = _latest("benchmark", "benchmark_2*.json") or {}
+    agg = _latest("benchmark", "benchmark_aggregate_*.json") or {}   # median over N runs
     dd = _latest("defense", "defense_effectiveness_defended_*.json") or {}
     db = _latest("defense", "defense_effectiveness_baseline_*.json") or {}
     co = _latest("coevolution", "coevolution_defended_*.json") or {}
@@ -71,6 +74,11 @@ def collect() -> dict:
                 "roc_auc": b.get("roc_auc"),
                 "roc_auc_combined": b.get("roc_auc_combined"),
                 "apt": f"{apt.get('detected')}/{apt.get('total')}",
+                # multi-run aggregate (report THIS, not a single lucky run) if present
+                "runs_aggregated": agg.get("n_runs"),
+                "median_range": agg.get("median_range"),
+                "apt_median": (f"{agg.get('apt_detected_median')}/{agg.get('apt_total')}"
+                               if agg.get("apt_detected_median") is not None else None),
             },
             "defense": {
                 "baseline_blocked": db.get("summary", {}).get("critical_ops_blocked"),
@@ -107,8 +115,11 @@ def main():
         "  " + "─" * 64,
         f"  Бенчмарк:    P={km['benchmark']['precision']} R={km['benchmark']['recall']} "
         f"F1={km['benchmark']['f1']} FPR={km['benchmark']['fpr']} "
-        f"AUC={km['benchmark']['roc_auc']} (комб.{km['benchmark']['roc_auc_combined']})",
-        f"  APT:         {km['benchmark']['apt']}",
+        f"AUC={km['benchmark']['roc_auc']} (комб.{km['benchmark']['roc_auc_combined']})"
+        + (f"  [медіана з {km['benchmark']['runs_aggregated']} прогонів — див. benchmark_aggregate]"
+           if km['benchmark'].get('runs_aggregated') else "  [ОДИН прогін — прожени benchmark ×N + aggregate]"),
+        f"  APT:         {km['benchmark']['apt']}"
+        + (f"  (медіана {km['benchmark']['apt_median']})" if km['benchmark'].get('apt_median') else ""),
         f"  Захист:      baseline {km['defense']['baseline_blocked']}/"
         f"{(km['defense']['baseline_blocked'] or 0)+(km['defense']['baseline_reached'] or 0)} → "
         f"defended {km['defense']['defended_blocked']}/"

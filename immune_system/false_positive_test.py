@@ -139,6 +139,19 @@ def main():
         print("\n  ❌ Проксі :8000 недоступний. Запусти immune_proxy.py")
         return
 
+    # Clear adaptive state (incl. ballot-ownership) so a voter "owned" by an EARLIER
+    # experiment (B-full/takeover cast for the same voter from another IP) does not
+    # false-block this honest voter — a FP on the most sensitive operation.
+    try:
+        rr = requests.post(f"{PROXY}/__immune__/reset", timeout=5)
+        if rr.status_code == 200:
+            print(f"  🧹 Стан ЦІС скинуто (owners={rr.json().get('ballot_owners_cleared')})")
+        else:
+            print("  ℹ️  Reset недоступний (DIS_TEST_RESET_ENABLED=1?) — можливий FP від "
+                  "минулих прогонів; для чистого FPR перезапусти проксі")
+    except requests.exceptions.RequestException:
+        pass
+
     # test several voters (voter4/voter5 have not voted yet — the cleanest test)
     test_voters = [("voter4", VOTERS.get("voter4", "")),
                    ("voter5", VOTERS.get("voter5", ""))]

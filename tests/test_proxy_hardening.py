@@ -106,6 +106,27 @@ def test_ballot_ownership_blocks_overwrite_from_new_source():
     assert proxy.ballot_ownership_verdict("elec1", "voter5", "198.51.100.7") == ""
 
 
+def test_reset_endpoint_clears_ballot_ownership(monkeypatch):
+    # REGRESSION: the reset endpoint must actually clear ownership (it previously
+    # 500'd on a missing `os` import, so FPR reset silently failed → legit voters
+    # false-blocked). Guard the whole path: gate + clearing.
+    monkeypatch.setenv("DIS_TEST_RESET_ENABLED", "1")
+    proxy._ballot_owner[("E", "v4")] = "1.1.1.1"
+    proxy._session_voter["sid"] = ("v4", "E", 1.0)
+    c = proxy.app.test_client()
+    r = c.post("/__immune__/reset")
+    assert r.status_code == 200                       # not 500 (the os-import regression)
+    body = r.get_json()
+    assert body["reset"] is True and body["ballot_owners_cleared"] >= 1
+    assert len(proxy._ballot_owner) == 0 and len(proxy._session_voter) == 0
+
+
+def test_reset_endpoint_disabled_without_flag(monkeypatch):
+    monkeypatch.delenv("DIS_TEST_RESET_ENABLED", raising=False)
+    c = proxy.app.test_client()
+    assert c.post("/__immune__/reset").status_code == 403   # gated off by default
+
+
 def test_ballot_ownership_fail_open_without_attribution():
     proxy._ballot_owner.clear()
     # no voter identity or no election → cannot attribute → must NOT block (fail-open)

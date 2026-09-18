@@ -13,8 +13,8 @@
   "linddun_impact": "Голос жертви замінено на вибір атакувальника",
   "severity": "critical",
   "target_component": "Helios /cast + /cast_confirm",
-  "description": "Найсильніша реальна атака на цілісність: атакувальник має ВКРАДЕНИЙ пароль виборця (фішинг/витік). Helios open-source, тож у нього є і клієнтська крипта. Він логіниться під жертвою, збирає КРИПТОГРАФІЧНО ВАЛІДНИЙ бюлетень (ElGamal + ZK-докази) крипто-бібліотекою самого Helios і подає його — vote_hash жертви змінюється. Це реальний ПІДТВЕРДЖЕНИЙ ущерб (не просто HTTP 200), і саме межа застосовності ЦІС: запит виглядає як легітимна автентифікована подача.",
-  "preconditions": "Вкрадений пароль виборця; виборчі заморожені (голосування відкрите).",
+  "description": "Найсильніша реальна атака на цілісність. ФАЗА 1: жертва легітимно голосує через ЦІС зі своєї адреси — імунна система фіксує 'своє' (ballot-ownership). ФАЗА 2: атакувальник з ВКРАДЕНИМ паролем збирає валідний ElGamal-бюлетень крипто-бібліотекою самого Helios і подає його з ІНШОГО джерела. Без захисту голос жертви перезаписано (vote_hash змінюється — реальний ущерб). Із ЦІС antibody ballot-ownership бачить перезапис не-своїм актором → BLOCK vote_manipulation.",
+  "preconditions": "Вкрадений пароль виборця; виборчі заморожені; легітимний голос проходить через ЦІС першим (inline-розгортання бачить усі голоси).",
   "voter_impact": {
     "psychological": "Виборець упевнений, що проголосував за свій вибір, тоді як голос підмінено",
     "technical": "Вкрадений пароль + валідний ElGamal-бюлетень → CastVote перезаписано",
@@ -23,96 +23,118 @@
   },
   "steps": [
     {
-      "step": 1,
-      "phase": "Reconnaissance",
-      "action": "Публічна сторінка виборів (стан, public key, питання)",
-      "method": "GET",
-      "endpoint": "/helios/elections/{election_uuid}/view",
-      "expected_result": "HTTP 200/302 — сторінка виборів або редирект на логін",
-      "attacker_note": "Election public key потрібен для збірки валідного бюлетеня."
+      "step": 1, "phase": "Victim (self)",
+      "action": "ФАЗА 1 — жертва: перегляд виборів (self-джерело)",
+      "method": "GET", "endpoint": "/helios/elections/{election_uuid}/view",
+      "x_forwarded_for": "203.0.113.150",
+      "expected_result": "HTTP 200/302",
+      "attacker_note": "Легітимний голос жертви має пройти через ЦІС першим — bootstrap 'свого' власника."
     },
     {
-      "step": 2,
-      "phase": "Credential Access",
-      "action": "Логін ВКРАДЕНИМИ обліковими даними виборця (election-scoped)",
-      "method": "POST",
-      "endpoint": "/helios/elections/{election_uuid}/password_voter_login",
+      "step": 2, "phase": "Victim (self)",
+      "action": "Жертва: логін власними даними",
+      "method": "POST", "endpoint": "/helios/elections/{election_uuid}/password_voter_login",
       "payload": {"voter_id": "{voter_id}", "password": "{password}", "return_url": ""},
       "follow_redirects": false,
-      "expected_result": "302 + сесія виборця (CURRENT_VOTER_ID)",
-      "attacker_note": "Election-scoped вхід відкриває приватні вибори; не йдемо за 302 (він веде на SECURE_URL_HOST)."
+      "expected_result": "302 + сесія виборця"
     },
     {
-      "step": 3,
-      "phase": "Preparation",
-      "action": "Збірка КРИПТОГРАФІЧНО ВАЛІДНОГО бюлетеня кріптою Helios",
-      "method": "BUILD_BALLOT",
-      "choice": 1,
-      "store_as": "encrypted_vote",
-      "expected_result": "Валідний EncryptedVote JSON (self-verified) у контексті",
-      "attacker_note": "Реюз helios.crypto.electionalgs → бюлетень пройде верифікацію сервера."
+      "step": 3, "phase": "Victim (self)",
+      "action": "Жертва: збірка валідного бюлетеня (вибір 0)",
+      "method": "BUILD_BALLOT", "choice": 0, "store_as": "encrypted_vote",
+      "expected_result": "Валідний EncryptedVote JSON"
     },
     {
-      "step": 4,
-      "phase": "Delivery",
-      "action": "Свіжий CSRF зі сторінки голосування",
-      "method": "GET",
-      "endpoint": "/helios/elections/{election_uuid}/view",
-      "expected_result": "HTTP 200 з csrfmiddlewaretoken",
-      "context_extract": {},
-      "attacker_note": "Django CSRF для POST /cast."
+      "step": 4, "phase": "Victim (self)",
+      "action": "Жертва: CSRF зі сторінки голосування",
+      "method": "GET", "endpoint": "/helios/elections/{election_uuid}/view",
+      "expected_result": "HTTP 200 з csrfmiddlewaretoken"
     },
     {
-      "step": 5,
-      "phase": "Exploitation",
-      "action": "Подача валідного бюлетеня (кладеться в сесію Helios)",
-      "method": "POST",
-      "endpoint": "/helios/elections/{election_uuid}/cast",
+      "step": 5, "phase": "Victim (self)",
+      "action": "Жертва: подача бюлетеня",
+      "method": "POST", "endpoint": "/helios/elections/{election_uuid}/cast",
       "payload": {"encrypted_vote": "{encrypted_vote}"},
-      "follow_redirects": false,
-      "expected_result": "302 → cast_confirm",
-      "attacker_note": "/cast зберігає encrypted_vote у сесії й редиректить на підтвердження."
+      "follow_redirects": false, "expected_result": "302 → cast_confirm"
     },
     {
-      "step": 6,
-      "phase": "Exploitation",
-      "action": "Сторінка підтвердження — дістаємо Helios csrf_token",
-      "method": "GET",
-      "endpoint": "/helios/elections/{election_uuid}/cast_confirm",
-      "expected_result": "HTTP 200 з прихованим полем csrf_token",
-      "context_extract": {},
-      "attacker_note": "check_csrf() у Helios порівнює POST csrf_token з session['csrf_token'] — беремо саме це поле, не csrfmiddlewaretoken."
+      "step": 6, "phase": "Victim (self)",
+      "action": "Жертва: сторінка підтвердження (ЦІС фіксує власника)",
+      "method": "GET", "endpoint": "/helios/elections/{election_uuid}/cast_confirm",
+      "expected_result": "HTTP 200 з csrf_token; ЦІС прив'язує голос до self-джерела"
     },
     {
-      "step": 7,
-      "phase": "Impact",
-      "action": "КОМІТ підміненого голосу",
-      "method": "POST",
-      "endpoint": "/helios/elections/{election_uuid}/cast_confirm",
+      "step": 7, "phase": "Victim (self)",
+      "action": "Жертва: КОМІТ легітимного голосу",
+      "method": "POST", "endpoint": "/helios/elections/{election_uuid}/cast_confirm",
       "payload": {"csrf_token": "{helios_csrf}"},
       "follow_redirects": false,
-      "expected_result": "302 → cast_done; vote_hash жертви ЗМІНЕНО (реальний ущерб)",
-      "attacker_note": "Тут відбувається CastVote.verify_and_store — голос жертви замінено."
+      "expected_result": "302 → cast_done; ballot-ownership = self (203.0.113.150)"
     },
     {
-      "step": 8,
-      "phase": "Verification",
-      "action": "Читання дошки бюлетенів — фіксуємо новий vote_hash",
-      "method": "GET",
-      "endpoint": "/helios/elections/{election_uuid}/ballots/?limit=500",
-      "expected_result": "JSON зі списком поданих бюлетенів (новий/змінений vote_hash)",
+      "step": 8, "phase": "Attacker (non-self)",
+      "action": "ФАЗА 2 — атакувальник: НОВА сесія з ІНШОГО джерела",
+      "method": "GET", "endpoint": "/helios/elections/{election_uuid}/view",
+      "new_session": true, "x_forwarded_for": "198.51.100.66",
+      "expected_result": "HTTP 200/302",
+      "attacker_note": "Ті самі ВКРАДЕНІ дані, але інша адреса — non-self."
+    },
+    {
+      "step": 9, "phase": "Attacker (non-self)",
+      "action": "Атакувальник: логін вкраденими даними",
+      "method": "POST", "endpoint": "/helios/elections/{election_uuid}/password_voter_login",
+      "payload": {"voter_id": "{voter_id}", "password": "{password}", "return_url": ""},
+      "follow_redirects": false, "expected_result": "302 + сесія"
+    },
+    {
+      "step": 10, "phase": "Attacker (non-self)",
+      "action": "Атакувальник: збірка валідного бюлетеня (ІНШИЙ вибір 1)",
+      "method": "BUILD_BALLOT", "choice": 1, "store_as": "encrypted_vote",
+      "expected_result": "Валідний бюлетень з підміненим вибором"
+    },
+    {
+      "step": 11, "phase": "Attacker (non-self)",
+      "action": "Атакувальник: CSRF",
+      "method": "GET", "endpoint": "/helios/elections/{election_uuid}/view",
+      "expected_result": "HTTP 200"
+    },
+    {
+      "step": 12, "phase": "Attacker (non-self)",
+      "action": "Атакувальник: подача підміненого бюлетеня",
+      "method": "POST", "endpoint": "/helios/elections/{election_uuid}/cast",
+      "payload": {"encrypted_vote": "{encrypted_vote}"},
+      "follow_redirects": false, "expected_result": "302 → cast_confirm"
+    },
+    {
+      "step": 13, "phase": "Attacker (non-self)",
+      "action": "Атакувальник: сторінка підтвердження",
+      "method": "GET", "endpoint": "/helios/elections/{election_uuid}/cast_confirm",
+      "expected_result": "HTTP 200 з csrf_token"
+    },
+    {
+      "step": 14, "phase": "Impact",
+      "action": "КОМІТ підміни (ЦІС має заблокувати як vote_manipulation)",
+      "method": "POST", "endpoint": "/helios/elections/{election_uuid}/cast_confirm",
+      "payload": {"csrf_token": "{helios_csrf}"},
+      "follow_redirects": false,
+      "expected_result": "БЕЗ захисту: 302, голос підмінено (vote_hash змінено). ІЗ ЦІС: 403 vote_manipulation (ballot-ownership)."
+    },
+    {
+      "step": 15, "phase": "Verification",
+      "action": "Дошка бюлетенів — фіксуємо результат (vote_hash)",
+      "method": "GET", "endpoint": "/helios/elections/{election_uuid}/ballots/?limit=500",
       "context_extract": {"vote_hash": "vote_hash"},
-      "attacker_note": "Порівняй з helios_ballot_count before/after — ground truth ущерба."
+      "expected_result": "Порівняй vote_hash жертви: змінено (baseline) / незмінно (defended)"
     }
   ],
   "indicators_of_compromise": [
-    "Валідний CastVote від імені виборця з нової адреси/сесії",
+    "Валідний CastVote від імені виборця з нового джерела після легітимного голосу",
     "Зміна vote_hash виборця між знімками ballots/"
   ],
   "detection_gaps": [
-    "Запит криптографічно й процедурно валідний — поведінковий аналіз ЦІС не відрізняє його від легітимної подачі без додаткових сигналів (ліміт пере-голосувань, аномалія зміни голосу на рівні Helios)."
+    "Запит криптографічно й процедурно валідний — ловиться лише antibody ballot-ownership (аномалія перезапису не-своїм джерелом), не payload/поведінкою. Обходиться, якщо атакувальник голосує ПЕРШИМ або клонує джерело жертви (межа §5.8)."
   ],
   "affected_cia": {"confidentiality": "Medium", "integrity": "Critical", "availability": "Low"},
-  "helios_vulns_exploited": ["Крадіжка облікових даних виборця; відсутність контролю пере-голосування/аномалії зміни голосу"],
-  "generated_at": "2026-09-17T00:00:00+00:00"
+  "helios_vulns_exploited": ["Крадіжка облікових даних виборця; відсутність контролю аномалії зміни голосу на рівні Helios"],
+  "generated_at": "2026-09-18T00:00:00+00:00"
 }
