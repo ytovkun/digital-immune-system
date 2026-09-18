@@ -59,7 +59,10 @@ st.title("🛡 Цифрова імунна система — результат
 st.caption("GenAI-моделювання кіберзагроз + inline-захист Helios e-voting · "
            "дані з `reports/` (останні прогони)")
 
-bench, bench_f   = _latest("benchmark", "benchmark_*.json")
+# a SINGLE benchmark run (benchmark_2*.json) — NOT benchmark_aggregate_*.json, which
+# has no `metrics` block and would render every headline as 0.00
+bench, bench_f   = _latest("benchmark", "benchmark_2*.json")
+bench_agg, _     = _latest("benchmark", "benchmark_aggregate_*.json")   # median over N runs
 risk, risk_f     = _latest("risk", "risk_assessment_*.json")
 ire, ire_f       = _latest("ire", "ire_report_*.json")
 metrics, met_f   = _latest("metrics", "metrics_summary_*.json")
@@ -85,15 +88,33 @@ redetect, rd_f = _latest("redetection", "redetection_*.json")
 
 st.markdown("**🛡 Із захистом (ЦІС) — класифікаційні метрики:**")
 c1, c2, c3, c4, c5 = st.columns(5)
+
+
+def _agg(name):
+    """Median [min, max] over N runs from the aggregate report (L2 is non-deterministic,
+    so a single run is not the headline). Returns (median, help_text) or (None, '')."""
+    mr = (bench_agg or {}).get("median_range", {}).get(name)
+    if not mr or mr.get("median") is None:
+        return None, ""
+    n = (bench_agg or {}).get("n_runs")
+    return mr["median"], f"медіана з {n} прогонів · діапазон [{mr['min']:.3f}, {mr['max']:.3f}]"
+
 if bench:
     m = bench.get("metrics", {})
-    c1.metric("Precision", f"{m.get('precision', 0):.2f}")
-    c2.metric("Recall", f"{m.get('recall', 0):.2f}")
-    c3.metric("F1", f"{m.get('f1', 0):.2f}")
-    # headline — the realistic combined ROC (main+borderline), not the "ideal" 1.0
-    c4.metric("ROC-AUC (реаліст.)", f"{bench.get('roc_auc_combined') or bench.get('roc_auc') or 0:.3f}",
-              help="Комбінований ROC (основна+гранична вибірка) — чесніший за точковий 1.0")
-    c5.metric("FPR", f"{m.get('fpr', 0):.2f}")
+    for col, label, single, aggkey in (
+        (c1, "Precision", m.get("precision", 0), "Precision"),
+        (c2, "Recall",    m.get("recall", 0),    "Recall/Detection"),
+        (c3, "F1",        m.get("f1", 0),        "F1"),
+    ):
+        med, hint = _agg(aggkey)
+        col.metric(label, f"{(med if med is not None else single):.2f}", help=hint or None)
+    # headline ROC — realistic combined (main+borderline), median across runs if available
+    med_auc, hint_auc = _agg("ROC-AUC (комб.)")
+    auc = med_auc if med_auc is not None else (bench.get("roc_auc_combined") or bench.get("roc_auc") or 0)
+    c4.metric("ROC-AUC (реаліст.)", f"{auc:.3f}",
+              help=(hint_auc or "Комбінований ROC (основна+гранична вибірка) — чесніший за точковий 1.0"))
+    med_fpr, hint_fpr = _agg("FPR")
+    c5.metric("FPR", f"{(med_fpr if med_fpr is not None else m.get('fpr', 0)):.2f}", help=hint_fpr or None)
 else:
     st.info("Немає бенчмарку — прожени `python immune_system/benchmark.py` (з проксі).")
 
