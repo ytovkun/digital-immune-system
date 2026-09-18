@@ -168,6 +168,23 @@ FP_WINDOW_SEC = 60.0
 # one fingerprint cycling through many IPs within a few seconds. We flag only that.
 FP_ROTATION_BURST_WINDOW = 10.0        # seconds
 FP_ROTATION_MIN_IPS = 5                # distinct IPs within the burst window → fast rotation
+
+# ─── Ballot-ownership antibody (stolen-credential vote manipulation, §5.8) ────
+# Immune memory of SELF vs NON-SELF for the integrity-critical event — a ballot
+# being cast/overwritten. When a voter casts THROUGH the proxy, we bind that voter's
+# ballot to the source that cast it (the actor address = a server-observed fact). A
+# later cast for the SAME voter from a DIFFERENT source is a ballot OVERWRITE by a
+# non-self actor — the signature of a stolen-credential vote change (B-full). A real
+# voter re-voting from their own session/address matches SELF and passes.
+# Bootstrap: the legitimate vote must pass through the proxy first to establish
+# ownership (an inline deployment sees every vote). Evasion (attacker cloning the
+# victim's exact source) is the documented boundary — it raises the bar, not a wall.
+_ballot_owner = {}                     # (election_uuid, voter_id) -> owner actor (ip)
+_session_voter = {}                    # sessionid -> (voter_id, election_uuid, ts)
+BALLOT_OWNER_MAX = 20000
+SESSION_VOTER_TTL = 900.0
+_LOGGED_IN_AS_RE = re.compile(r"logged in as\s*<u>(.*?)</u>", re.I | re.S)
+_TAG_RE = re.compile(r"<[^>]+>")
 _UUID_RE2 = re.compile(
     r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', re.I)
 # a long SINGLE segment (ballot hash, etc.) — WITHOUT '/', so it does not eat "helios/elections"
@@ -407,6 +424,52 @@ def _fp_rotation_fast(fp: str, now: float,
     but spread out over the minute (the latter must NOT be flagged — reviewer #4)."""
     with _state_lock:
         return len({ip for ts, ip in _fp_history.get(fp, ()) if now - ts <= window}) >= min_ips
+
+
+def _extract_voter_id(html: str) -> str:
+    """Pull the voter identity from Helios' cast-confirm page ('You are logged in as
+    <u>...</u>'). Returns a stable per-voter string, or '' if not present."""
+    m = _LOGGED_IN_AS_RE.search(html or "")
+    if not m:
+        return ""
+    return _TAG_RE.sub("", m.group(1)).strip()[:80]
+
+
+def _remember_session_voter(session_id: str, voter_id: str, election_uuid: str, now: float):
+    if not (session_id and voter_id):
+        return
+    with _state_lock:
+        _session_voter[session_id] = (voter_id, election_uuid, now)
+        if len(_session_voter) > BALLOT_OWNER_MAX:
+            # drop the oldest-ish entry (bounded memory)
+            _session_voter.pop(next(iter(_session_voter)), None)
+
+
+def _voter_for_session(session_id: str, now: float):
+    with _state_lock:
+        ent = _session_voter.get(session_id)
+    if ent and (now - ent[2]) <= SESSION_VOTER_TTL:
+        return ent[0], ent[1]
+    return "", ""
+
+
+def ballot_ownership_verdict(election_uuid: str, voter_id: str, actor: str) -> str:
+    """SELF/NON-SELF decision for a ballot commit. Returns 'block' when a DIFFERENT
+    actor is overwriting a voter's ballot (takeover); otherwise '' and records the
+    owner on first sight (immune memory of 'self')."""
+    if not (election_uuid and voter_id and actor):
+        return ""                        # cannot attribute → do not act (fail-open)
+    key = (election_uuid, voter_id)
+    with _state_lock:
+        owner = _ballot_owner.get(key)
+        if owner is None:
+            _ballot_owner[key] = actor    # learn SELF (the first legitimate caster)
+            if len(_ballot_owner) > BALLOT_OWNER_MAX:
+                _ballot_owner.pop(next(iter(_ballot_owner)), None)
+            return ""
+        if owner == actor:
+            return ""                     # same source re-voting → legitimate
+        return "block"                    # different source overwriting → takeover
 
 
 def _trajectory_summary(actor: str, now: float) -> str:
@@ -884,6 +947,36 @@ def proxy(path):
         resp.headers["X-Immune-Score"] = "1.0"
         return resp
 
+    # ─── Ballot-ownership antibody: stolen-credential vote manipulation ───────
+    # Deterministic (like the payload backstop): on a ballot COMMIT (/cast_confirm),
+    # if a source OTHER than the one that first cast this voter's ballot is overwriting
+    # it → takeover → BLOCK. Catches B-full (valid creds + valid ballot from a new
+    # device) which is otherwise indistinguishable from a legit vote at L1/L2.
+    if method == "POST" and "cast_confirm" in fullPath:
+        m_el = _ELECTION_RE.search(fullPath)
+        election_uuid = m_el.group(1) if m_el else ""
+        voter_id, _ = _voter_for_session(sessionId, _now0)
+        if ballot_ownership_verdict(election_uuid, voter_id, clientIp) == "block":
+            latency = round((time.perf_counter() - t0) * 1000, 2)
+            bump("blocked_fast", attack_class="vote_manipulation")
+            bump("latency_sum_ms", latency)
+            log_decision({
+                "tier": "FastReflex", "verdict": "BLOCK", "method": method,
+                "path": fullPath, "client_ip": clientIp,
+                "attack_class": "vote_manipulation",
+                "reason": "Перезапис бюлетеня виборця з ІНШОГО джерела — ознака "
+                          "перехоплення облікових даних (ballot-ownership антитіло)",
+                "signal": "ballot_ownership", "voter": voter_id, "latency_ms": latency,
+            })
+            print(f"  🔴 BLOCK [ballot-ownership] {method} {fullPath} → "
+                  f"vote_manipulation (чужий переписує голос) ({latency}ms)", flush=True)
+            resp = make_block_response(
+                {"attack_class": "vote_manipulation",
+                 "reason": "Спроба перезапису бюлетеня з іншого джерела (перехоплення сесії)"},
+                "FastReflex")
+            resp.headers["X-Immune-Score"] = "1.0"
+            return resp
+
     # ─── Layer 2: AIAnalyst (for INSPECT) ─────────────────────────────────────
     if verdict == "INSPECT":
         bump("inspected")
@@ -959,6 +1052,17 @@ def proxy(path):
     # ─── ALLOW: forward to Helios ─────────────────────────────────────────────
     response = forward_to_helios(path)
     response.headers["X-Immune-Score"] = str(round(threat_score, 4))   # для ROC
+    # Learn which voter this session belongs to from the cast-confirm page ("logged
+    # in as ..."), so the ballot-ownership antibody can attribute the later commit.
+    if method == "GET" and "cast_confirm" in fullPath and sessionId:
+        m_el = _ELECTION_RE.search(fullPath)
+        try:
+            voter_id = _extract_voter_id(response.get_data(as_text=True))
+        except (UnicodeDecodeError, RuntimeError):
+            voter_id = ""
+        if voter_id:
+            _remember_session_voter(sessionId, voter_id,
+                                    m_el.group(1) if m_el else "", _now0)
     latency = round((time.perf_counter() - t0) * 1000, 2)
     bump("allowed")
     bump("latency_sum_ms", latency)

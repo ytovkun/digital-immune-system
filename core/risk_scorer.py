@@ -98,7 +98,13 @@ def parse_linddun(linddun_str: str) -> list:
     return codes or ["L"]
 
 
-def cia_score(affected_cia: dict) -> float:
+def cia_score(affected_cia) -> float:
+    # Accept both shapes: a dict {"integrity": "Critical", ...} OR a plain list of
+    # affected dimensions ["Integrity", ...] (a listed dimension counts as "High").
+    if isinstance(affected_cia, list):
+        affected_cia = {str(x).lower(): "High" for x in affected_cia}
+    elif not isinstance(affected_cia, dict):
+        affected_cia = {}
     s = sum(SEVERITY_MAP.get(affected_cia.get(k, "Low"), 0.25) * w
             for k, w in CIA_WEIGHTS.items())
     return round(s, 3)

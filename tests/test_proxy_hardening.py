@@ -92,6 +92,82 @@ def test_fingerprint_distinct_ips_counts_rotation():
     assert proxy._fp_distinct_ips(fp, now) == 6     # IP rotation visible via the antigen
 
 
+# ─── Ballot-ownership antibody (stolen-credential vote manipulation) ──────────
+
+def test_ballot_ownership_blocks_overwrite_from_new_source():
+    proxy._ballot_owner.clear()
+    # first legitimate cast from the voter's own source → learned as SELF, allowed
+    assert proxy.ballot_ownership_verdict("elec1", "voter4", "203.0.113.20") == ""
+    # same source re-voting (voter changes their mind) → still allowed
+    assert proxy.ballot_ownership_verdict("elec1", "voter4", "203.0.113.20") == ""
+    # a DIFFERENT source overwriting voter4's ballot → takeover → BLOCK
+    assert proxy.ballot_ownership_verdict("elec1", "voter4", "198.51.100.7") == "block"
+    # a different voter is independent
+    assert proxy.ballot_ownership_verdict("elec1", "voter5", "198.51.100.7") == ""
+
+
+def test_ballot_ownership_fail_open_without_attribution():
+    proxy._ballot_owner.clear()
+    # no voter identity or no election → cannot attribute → must NOT block (fail-open)
+    assert proxy.ballot_ownership_verdict("elec1", "", "1.1.1.1") == ""
+    assert proxy.ballot_ownership_verdict("", "voter4", "1.1.1.1") == ""
+
+
+def test_ballot_ownership_end_to_end_through_proxy(monkeypatch):
+    """Integration: a GET /cast_confirm teaches the proxy the voter; the legit commit
+    from the victim's source is allowed and binds ownership; a second commit for the
+    SAME voter from a DIFFERENT source is blocked as vote_manipulation."""
+    from flask import Response as FResp
+    proxy._ballot_owner.clear()
+    proxy._session_voter.clear()
+    monkeypatch.setattr(proxy, "VERBOSE_BLOCKS", True)
+    proxy._actor_history.clear()
+
+    def fake_forward(path):
+        # GET cast_confirm → the Helios confirm page naming the voter; POST → 302 commit
+        if request.method == "GET":
+            return FResp('<p>You are logged in as <u>voterX</u></p>', status=200)
+        return FResp("", status=302)
+
+    from flask import request
+    monkeypatch.setattr(proxy, "forward_to_helios", fake_forward)
+    monkeypatch.setattr(proxy.analyst, "analyze",
+                        lambda *a, **k: {"verdict": "ALLOW", "attack_class": None,
+                                         "confidence": 0.0, "reasoning": "", "from_cache": False})
+    c = proxy.app.test_client()
+    ep = "/helios/elections/c88cfaeb-abc0-4440-a165-a77cab2951f2/cast_confirm"
+
+    # victim establishes ownership from their own address
+    c.set_cookie("sessionid", "sid-victim", domain="localhost")
+    c.get(ep, headers={"X-Forwarded-For": "203.0.113.20"})
+    r1 = c.post(ep, headers={"X-Forwarded-For": "203.0.113.20"})
+    assert r1.status_code == 302                      # legit commit allowed
+
+    # attacker: same voter (learned via their own confirm GET), different source
+    c.set_cookie("sessionid", "sid-attacker", domain="localhost")
+    c.get(ep, headers={"X-Forwarded-For": "198.51.100.66"})
+    r2 = c.post(ep, headers={"X-Forwarded-For": "198.51.100.66"})
+    assert r2.status_code == 403                      # takeover blocked
+    assert r2.get_json()["attack_class"] == "vote_manipulation"
+
+
+def test_extract_voter_id_from_confirm_page():
+    html = '<p>You are logged in as <u>voter4 name</u><br /><br /></p>'
+    assert proxy._extract_voter_id(html) == "voter4 name"
+    assert proxy._extract_voter_id("<p>nothing here</p>") == ""
+
+
+def test_session_voter_memory_roundtrip():
+    import time
+    proxy._session_voter.clear()
+    now = time.time()
+    proxy._remember_session_voter("sid123", "voter4", "elec1", now)
+    vid, elec = proxy._voter_for_session("sid123", now)
+    assert vid == "voter4" and elec == "elec1"
+    # expired entry is not returned
+    assert proxy._voter_for_session("sid123", now + proxy.SESSION_VOTER_TTL + 1) == ("", "")
+
+
 def test_fp_rotation_fast_distinguishes_crowd_from_apt():
     import time
     proxy._fp_history.clear()

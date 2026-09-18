@@ -97,22 +97,47 @@ if bench:
 else:
     st.info("Немає бенчмарку — прожени `python immune_system/benchmark.py` (з проксі).")
 
-# ── "Without defense" (raw Helios) — key indicators for contrast on screen 1 ──
+# ── "Without defense" (raw Helios) — honest defense-in-depth picture ──────────
+# In baseline NO proxy is in the path, so nothing is DIS-blocked; and most critical
+# ops do NOT execute because Helios' OWN access control (private election) + ElGamal
+# validation reject them. The real, PROVEN harm is a changed vote_hash (ballot
+# manipulation via stolen credentials — B-full), read from the ballot snapshots.
+def _ballot_harm():
+    """(changed_votes, voted_after) from reports/ballots/ before vs after, or (None, None)."""
+    try:
+        bp = REPORTS / "ballots" / "ballots_before.json"
+        ap = REPORTS / "ballots" / "ballots_after.json"
+        if not (bp.exists() and ap.exists()):
+            return None, None
+        b = json.load(open(bp, encoding="utf-8"))
+        a = json.load(open(ap, encoding="utf-8"))
+        hb, ha = b.get("hashes") or {}, a.get("hashes") or {}
+        changed = sum(1 for v in hb if v in ha and hb[v] != ha[v]) + \
+                  sum(1 for v in ha if v not in hb)
+        return changed, a.get("voted_count")
+    except (OSError, ValueError, KeyError, TypeError):
+        return None, None
+
 if defense_base:
     sb = defense_base.get("summary", {})
-    _bb = sb.get("critical_ops_blocked", 0)
-    _br = sb.get("critical_ops_reached", 0)
-    _tot = _bb + _br
+    _br = sb.get("critical_ops_reached", 0)          # provably executed at backend
+    _other = sb.get("critical_ops_other", 0)         # present but Helios rejected them
+    _changed, _ = _ballot_harm()
     st.markdown("**🔴 Без захисту (сирий Helios) — ті самі атаки прямо в :8001:**")
     n1, n2, n3, n4 = st.columns(5)[:4]
     n1.metric("Детекція атак", "0%",
               help="Сирий Helios не має детектора загроз — не блокує нічого")
-    n2.metric("🔴 Крит-операцій дійшло", f"{_br}/{_tot}" if _tot else "—",
-              help="Небезпечні операції (cast/tally/…), що досягли Helios без захисту")
-    n3.metric("Заблоковано", f"{_bb}/{_tot}" if _tot else "0")
-    n4.metric("Витоків (leaked)", _br)
-    st.caption("Контраст: без захисту небезпечні операції проходять; із ЦІС — "
-               "0 витоків, усі крит-операції блоковано (деталі: вкладка «🔬 Ефективність захисту»).")
+    n2.metric("Крит-операцій виконано", _br,
+              help="Підтверджено виконаних на backend (2xx з реальними даними). "
+                   "Реальний ефект підміни голосу підтверджується зміною vote_hash, а не HTTP-статусом.")
+    n3.metric("Відхилив сам Helios", _other,
+              help="Крит-операція була, але контроль доступу/крипта Helios її відхилили "
+                   "(сторінка логіну/302/5xx) — захист у глибину, не DIS")
+    n4.metric("🔴 Підміна голосу (vote_hash)", "—" if _changed is None else _changed,
+              help="Змінені бюлетені між знімками before/after — реальний ущерб (B-full, вкрадені дані)")
+    st.caption("Захист у глибину: без ЦІС небезпечні запити доходять, але Helios сам "
+               "відхиляє більшість; реальну ж підміну голосу (валідні вкрадені дані) "
+               "ловить лише ballot-ownership антитіло ЦІС (вкладка «🔬 Ефективність захисту»).")
 
 st.divider()
 
