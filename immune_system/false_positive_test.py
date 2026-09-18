@@ -203,11 +203,13 @@ def main():
     import statistics as _st
     def _stat(v):
         return (f"сер {_st.mean(v):.0f} · макс {max(v):.0f} ms" if v else "—")
-    print("\n  ⏱  ЗАТРИМКА чесного голосу (серверна, без людських пауз):")
-    print(f"     POST /cast (через L2):          {_stat(cast_l)}")
+    print("\n  ⏱  ЗАТРИМКА чесного голосу (лише КРИТИЧНІ операції, БЕЗ статики сторінки):")
+    print(f"     POST /cast (через L2):            {_stat(cast_l)}")
     print(f"     POST /cast_confirm (L2+антитіло): {_stat(confirm_l)}")
     if journey_l:
-        print(f"     Уся подорож виборця (сума кроків): {sum(journey_l):.0f} ms")
+        print(f"     Сума серверних затримок кроків:   {sum(journey_l):.0f} ms")
+    print("     ⚠️  Це затримка КРИТИЧНОЇ операції без завантаження CSS/JS кабіни Helios —")
+    print("        повний time-to-vote з браузера більший (потрібен Playwright-тест).")
     print("     ⚠️  Критичні операції fail-closed при недоступності L2 (див. §5.8).")
     print("=" * 72)
 
@@ -219,10 +221,11 @@ def main():
                else f"{total - false_blocks}/{total} легітимних запитів пропущено",
         passed=(false_blocks == 0), source="false_positive_test.py")
     save_security_result(
-        key="voter_latency", label="Затримка чесного голосу (серверна)",
+        key="voter_latency", label="Затримка критичної операції (без статики сторінки)",
         value=(f"/cast сер {_st.mean(cast_l):.0f}ms, макс {max(cast_l):.0f}ms" if cast_l else "—"),
-        detail=(f"/cast_confirm сер {_st.mean(confirm_l):.0f}ms; вся подорож "
-                f"{sum(journey_l):.0f}ms; критичні операції через L2 (fail-closed)"
+        detail=(f"/cast_confirm сер {_st.mean(confirm_l):.0f}ms; сума серверних кроків "
+                f"{sum(journey_l):.0f}ms. БЕЗ CSS/JS кабіни — повний time-to-vote з браузера "
+                f"більший (потрібен Playwright). Критичні операції через L2 (fail-closed §5.8)"
                 if confirm_l and journey_l else "недостатньо даних"),
         passed=True, source="false_positive_test.py")
 
