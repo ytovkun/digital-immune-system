@@ -180,7 +180,9 @@ def main():
 
     # DIS — from the latest benchmark
     dis = {}
-    bf = sorted(glob.glob(str(REPORTS / "benchmark" / "benchmark_*.json")))
+    # a real benchmark run (benchmark_2*.json) — NOT benchmark_aggregate_*.json,
+    # which has no `metrics`/`apt_detection` block and would blank the DIS column
+    bf = sorted(glob.glob(str(REPORTS / "benchmark" / "benchmark_2*.json")))
     if bf:
         b = json.load(open(bf[-1], encoding="utf-8"))
         dis = b.get("metrics", {})

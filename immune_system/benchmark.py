@@ -560,14 +560,21 @@ def main():
         elif is_attack and not blocked: bFN += 1; res = "FN"
         elif not is_attack and blocked: bFP += 1; res = "FP"
         else:                           bTN += 1; res = "TN"
-        border_rows.append((item["label"], item["why"], status, res, round(score, 3)))
+        # Tier inference: a request only reaches L2 when the proxy escalates it to
+        # INSPECT (critical op / anomaly / non-human tempo). X-Immune-Score carries
+        # the L2 threat_score; it stays 0.0 for an L1 hard-ALLOW that NEVER reached the
+        # model. So an FN with score==0 is "L1 let it through", NOT "the AI judged it
+        # safe" — an important distinction for §5.4 (reviewer).
+        tier = "L2" if score > 0 else "L1"
+        border_rows.append((item["label"], item["why"], status, res, round(score, 3), tier))
         time.sleep(0.05)
 
-    print(f"  {'Мітка':<8} {'Кейс':<48} {'HTTP':>5} {'рез':>4} score")
-    print(f"  {'─'*76}")
-    for label, why, status, res, sc in border_rows:
+    print(f"  {'Мітка':<8} {'Кейс':<44} {'HTTP':>5} {'рез':>4} {'рівень':>7} score")
+    print(f"  {'─'*80}")
+    for label, why, status, res, sc, tier in border_rows:
         flag = " ⚠" if res in ("FP", "FN") else ""
-        print(f"  {label:<8} {why[:48]:<48} {str(status):>5} {res:>4}{flag} {sc}")
+        note = " (не дійшло до L2)" if (res == "FN" and tier == "L1") else ""
+        print(f"  {label:<8} {why[:44]:<44} {str(status):>5} {res:>4}{flag} {tier:>7} {sc}{note}")
 
     b_prec = bTP / (bTP + bFP) if (bTP + bFP) else 0.0
     b_rec  = bTP / (bTP + bFN) if (bTP + bFN) else 0.0
@@ -639,8 +646,11 @@ def main():
             "metrics": {"precision": round(b_prec, 4), "recall": round(b_rec, 4),
                         "f1": round(b_f1, 4)},
             "roc_auc": round(b_auc, 4) if b_auc is not None else None,
-            "cases": [{"label": lb, "why": w, "status": st, "result": rs, "score": sc}
-                      for lb, w, st, rs, sc in border_rows],
+            "cases": [{"label": lb, "why": w, "status": st, "result": rs, "score": sc,
+                       "tier": ti, "reached_l2": ti == "L2"}
+                      for lb, w, st, rs, sc, ti in border_rows],
+            "note": ("FN з tier=L1 означає 'L1 пропустив (жорсткий ALLOW на вході, "
+                     "не дійшло до L2)', а НЕ 'ШІ визнав безпечним' — §5.4"),
         },
         "roc_auc_combined": round(c_auc, 4) if c_auc is not None else None,
         "roc_points_combined": [{"fpr": fp, "tpr": tp, "threshold": th} for fp, tp, th in c_roc],

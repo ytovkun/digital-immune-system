@@ -71,15 +71,17 @@ def legitimate_voter_journey(login: str, password: str, client_ip: str = "203.0.
     def do(label, method, path, **kw):
         url = f"{PROXY}{path}"
         r = None
+        t0 = time.perf_counter()
         try:
             if method == "GET":
                 r = s.get(url, timeout=15, allow_redirects=False, **kw)
             else:
                 r = s.post(url, timeout=15, allow_redirects=False, **kw)
+            lat_ms = (time.perf_counter() - t0) * 1000   # server-side latency (no human pause)
             blocked = (r.status_code == 403 and "Immune" in r.text)
-            steps.append((label, r.status_code, blocked))
+            steps.append((label, r.status_code, blocked, round(lat_ms, 1)))
         except requests.exceptions.RequestException as e:
-            steps.append((label, f"ERR:{type(e).__name__}", False))
+            steps.append((label, f"ERR:{type(e).__name__}", False, None))
         time.sleep(2.5)  # REALISTIC human tempo: a voter reads the page and enters
         #                  data over seconds, not in 0.8s (0.8s = a non-human burst)
         return r
@@ -164,14 +166,25 @@ def main():
         print(f"\n  ▶ Легітимний виборець: {login}  (IP {client_ip})")
         steps = legitimate_voter_journey(login, pwd, client_ip)
         all_steps += steps
-        for label, status, blocked in steps:
+        for label, status, blocked, lat in steps:
             icon = "🔴 ХИБНИЙ БЛОК" if blocked else "✓"
-            print(f"    {icon}  {label:<32} HTTP {status}")
+            lat_s = f"{lat:>7.1f} ms" if isinstance(lat, (int, float)) else "     — "
+            print(f"    {icon}  {label:<32} HTTP {status}   {lat_s}")
 
     # ─── Summary ────────────────────────────────────────────────────────────────
     total = len(all_steps)
-    false_blocks = sum(1 for _, _, b in all_steps if b)
+    false_blocks = sum(1 for _, _, b, _ in all_steps if b)
     fp_rate = (false_blocks / total * 100) if total else 0
+
+    # End-to-end latency of the HONEST voter path (reviewer): /cast and /cast_confirm
+    # both go through L2 (fail-closed on critical ops), and /cast_confirm now also runs
+    # the deterministic ballot-ownership antibody. Report their real latency.
+    def _lat(sub):
+        return [l for lb, _, _, l in all_steps if sub in lb.lower()
+                and isinstance(l, (int, float))]
+    cast_l = _lat("голос") + _lat("cast")
+    confirm_l = _lat("підтвердж")
+    journey_l = [l for *_, l in all_steps if isinstance(l, (int, float))]
 
     print("\n" + "=" * 72)
     print("  📊 РЕЗУЛЬТАТ")
@@ -185,13 +198,33 @@ def main():
     else:
         print(f"\n  ⚠️  {false_blocks} легітимних запитів заблоковано — потрібне")
         print("     калібрування ШІ (занадто агресивний поріг)")
+
+    # ─── Latency of the honest voter path ────────────────────────────────────────
+    import statistics as _st
+    def _stat(v):
+        return (f"сер {_st.mean(v):.0f} · макс {max(v):.0f} ms" if v else "—")
+    print("\n  ⏱  ЗАТРИМКА чесного голосу (серверна, без людських пауз):")
+    print(f"     POST /cast (через L2):          {_stat(cast_l)}")
+    print(f"     POST /cast_confirm (L2+антитіло): {_stat(confirm_l)}")
+    if journey_l:
+        print(f"     Уся подорож виборця (сума кроків): {sum(journey_l):.0f} ms")
+    print("     ⚠️  Критичні операції fail-closed при недоступності L2 (див. §5.8).")
     print("=" * 72)
 
     save_security_result(
         key="fpr", label="False-positive rate (FPR)",
         value=f"{fp_rate:.1f}%",
-        detail=f"{total - false_blocks}/{total} легітимних запитів пропущено",
+        detail=f"{total - false_blocks}/{total} легітимних; "
+               f"lat /cast сер={_st.mean(cast_l):.0f}ms макс={max(cast_l):.0f}ms" if cast_l
+               else f"{total - false_blocks}/{total} легітимних запитів пропущено",
         passed=(false_blocks == 0), source="false_positive_test.py")
+    save_security_result(
+        key="voter_latency", label="Затримка чесного голосу (серверна)",
+        value=(f"/cast сер {_st.mean(cast_l):.0f}ms, макс {max(cast_l):.0f}ms" if cast_l else "—"),
+        detail=(f"/cast_confirm сер {_st.mean(confirm_l):.0f}ms; вся подорож "
+                f"{sum(journey_l):.0f}ms; критичні операції через L2 (fail-closed)"
+                if confirm_l and journey_l else "недостатньо даних"),
+        passed=True, source="false_positive_test.py")
 
 
 if __name__ == "__main__":
