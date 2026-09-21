@@ -196,3 +196,26 @@ def test_class_meta_freezes_cia_linddun_across_generations():
     assert rs._class_meta(adap, "linddun_category", "L") == "I"
     assert rs._class_meta(adap, "mitre_technique_id", "") == "T1565.001"
     rs.build_class_meta([])          # reset module state so other tests are unaffected
+
+
+def test_gen1_malicious_goal_invariant_repairs_vote_change():
+    # a gen-1 mutation that dropped the dangerous op must be repaired so the class's
+    # malicious goal survives (§4.4.4 invariant enforced in code, not only the prompt)
+    import adaptive_generator as adg
+    sc = {"steps": [{"step": 1, "method": "GET", "endpoint": "/helios/elections/E/view"}]}
+    out = adg.ensure_malicious_goal(sc, "vote_change_stolen_creds")
+    methods = [s.get("method") for s in out["steps"]]
+    endpoints = [s.get("endpoint") or "" for s in out["steps"]]
+    assert "BUILD_BALLOT" in methods                      # valid ballot re-attached
+    assert any("/cast" in e for e in endpoints)           # dangerous op present
+    # BUILD_BALLOT must come BEFORE the /cast
+    bb = methods.index("BUILD_BALLOT")
+    cast = next(i for i, e in enumerate(endpoints) if "/cast" in e)
+    assert bb < cast
+
+
+def test_gen1_invariant_leaves_softer_classes_untouched():
+    import adaptive_generator as adg
+    sc = {"steps": [{"step": 1, "method": "GET", "endpoint": "/voters/"}]}
+    out = adg.ensure_malicious_goal(sc, "voter_timing_deanonymization")
+    assert len(out["steps"]) == 1                          # no hard op forced on recon class

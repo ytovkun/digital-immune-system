@@ -79,7 +79,7 @@ def l1_block_match(low_text: str):
 
 # ─── Body/path backstop AFTER the AI (deterministic override of a pass) ───────
 # If the AI (L2) said ALLOW but the path/BODY contains an UNAMBIGUOUS payload —
-# force-BLOCK: the AI cannot be tricked (prompt-injection) into passing an
+# force-BLOCK: reduces prompt-injection exposure — a deterministic override blocks an
 # explicit payload, and L1 matches the path only and does not see a payload in
 # the POST BODY.
 # NARROW, FP-safe for free text: deliberately WITHOUT '..','%2e%2e','%27','0x'

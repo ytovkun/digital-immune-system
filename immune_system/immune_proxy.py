@@ -928,7 +928,7 @@ def proxy(path):
     _raw_body = request.get_data(as_text=True)[:BACKSTOP_BODY_BYTES] if request.content_length else ""
 
     # ─── Deterministic PAYLOAD BACKSTOP (path OR body) ────────────────────────
-    # Guarantee: the AI cannot be tricked (prompt-injection) into passing an UNAMBIGUOUS
+    # Reduces prompt-injection exposure: a deterministic backstop blocks an UNAMBIGUOUS
     # payload. L1 matches only the path; SQLi/SSTI in the POST BODY bypass it and reach
     # the AI — here a deterministic override blocks them regardless of the AI verdict.
     if hard_payload_present(inspectPath, _raw_body):
@@ -939,7 +939,7 @@ def proxy(path):
         log_decision({
             "tier": "FastReflex", "verdict": "BLOCK", "method": method,
             "path": fullPath, "client_ip": clientIp, "attack_class": ac,
-            "reason": "Однозначний payload у шляху/тілі — детермінований бэкстоп (ШІ не обдурити)",
+            "reason": "Однозначний payload у шляху/тілі — детермінований бэкстоп (знижує ризик prompt-injection)",
             "signal": "payload_backstop", "latency_ms": latency,
         })
         print(f"  🔴 BLOCK [backstop payload] {method} {fullPath} → {ac} ({latency}ms)",

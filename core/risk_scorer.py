@@ -208,11 +208,18 @@ def score_report(report: dict) -> dict:
         "vector":                 report.get("vector", "system"),
         "is_adaptive":            bool(report.get("adaptation_mode")),
         "stride_category":        report.get("stride_category", ""),
-        "mitre_technique_id":     mitre_id,
-        "mitre_technique_name":   report.get("mitre_technique_name", ""),
-        "linddun_category":       report.get("linddun_category", ""),
-        "severity_declared":      report.get("severity", ""),
-        "severity_catalog":       catalog_severity(report),   # what the score used (Table 4.3)
+        # DECLARED = what this (possibly adaptive) report labelled; SCORED = the frozen
+        # class-level value actually used in the formula. They can differ for a gen-1
+        # mutation; exposing both avoids the impression the score used a different label.
+        "mitre_technique_id":       mitre_id,                  # scored (class-level)
+        "mitre_technique_id_declared": report.get("mitre_technique_id", ""),
+        "mitre_technique_name":     report.get("mitre_technique_name", ""),
+        "linddun_category":         _class_meta(report, "linddun_category", "L"),  # scored
+        "linddun_category_declared": report.get("linddun_category", ""),
+        "affected_cia_scored":      _class_meta(report, "affected_cia", {}),
+        "affected_cia_declared":    report.get("affected_cia", {}),
+        "severity_declared":        report.get("severity", ""),
+        "severity_catalog":         catalog_severity(report),   # what the score used (Table 4.3)
         "verdict":                report.get("verdict", ""),
         "http_success_rate":      report.get("http_success_rate", 0),
         "weighted_success_rate":  report.get("weighted_success_rate", 0),

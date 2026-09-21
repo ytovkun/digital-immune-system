@@ -92,7 +92,8 @@ def collect() -> dict:
         "reproducibility_note": (
             "ШІ-залежні результати (APT, гранична вибірка) виносить живий Claude — "
             "можлива варіативність ±ε між прогонами; L1-детекція та payload-бэкстоп "
-            "детерміновані. Сирі рішення проксі — logs/immune_blocks.jsonl."),
+            "детерміновані. Сирі BLOCK/FLAG-рішення проксі — logs/immune_blocks.jsonl, "
+            "рішення L2 ALLOW — logs/immune_l2_allows.jsonl."),
         "key_metrics": {
             "benchmark": {
                 "samples": b.get("samples"),

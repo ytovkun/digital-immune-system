@@ -169,13 +169,73 @@ All vulnerabilities referenced are from published academic papers on Helios secu
   GET  /helios/elections/{uuid}/trustees/
 
 Правила для кроків:
-  - method: ТІЛЬКИ GET / POST / LOCAL / NETWORK
+  - method: GET / POST / LOCAL / NETWORK (для vote-change класів можна BUILD_BALLOT перед /cast — збірка валідного бюлетеня)
   - endpoint: реальний URL або null (для LOCAL/NETWORK)
   - context_extract: використовуй json: або json_key: префікс, НЕ raw regex з []
   - payload: конкретні значення, не шаблони
   - adaptation_note: пояснення чим цей крок відрізняється від попереднього
 
 Відповідай ТІЛЬКИ валідним JSON."""
+
+
+# Class → the DANGEROUS operation a valid mutation of this class MUST still attempt
+# (the "malicious goal" invariant of §4.4.4 — enforced in code, not just the prompt).
+# "ballot": the class needs a cryptographically valid ballot, so a BUILD_BALLOT step
+# must precede the attacking /cast (gen-0 uses it; gen-1 must not silently drop it).
+_CLASS_GOAL = {
+    "ballot_stuffing":                      {"ops": ["/cast_confirm", "/cast"], "ballot": True},
+    "vote_change_stolen_creds":             {"ops": ["/cast_confirm", "/cast"], "ballot": True},
+    "voter_social_engineering_vote_change": {"ops": ["/cast_confirm", "/cast"], "ballot": True},
+    "session_forgery":                      {"ops": ["/cast_confirm", "/cast"], "ballot": False},
+    "dos_zk_flood":                         {"ops": ["/cast"],                  "ballot": False},
+    "csrf_trustee_takeover":                {"ops": ["/upload-decryption", "/trustees"], "ballot": False},
+    "tally_manipulation":                   {"ops": ["encrypt_tally", "compute_tally", "/tally"], "ballot": False},
+}
+
+
+def _has_op(steps, ops) -> bool:
+    return any(any(o in str(s.get("endpoint") or "") for o in ops) for s in steps)
+
+
+def ensure_malicious_goal(scenario: dict, attack_class: str) -> dict:
+    """Programmatic guard that a gen-1 mutation keeps the class's malicious goal: it must
+    still attempt the class's dangerous operation, and (for ballot classes) build a valid
+    ballot before /cast. Repairs the scenario in place if the generator dropped it, so the
+    §4.4.4 invariant holds by construction, not only by prompt instruction."""
+    goal = _CLASS_GOAL.get(attack_class)
+    if not goal:
+        return scenario                      # softer classes (recon/human) — no hard op
+    steps = scenario.get("steps") or []
+    if not _has_op(steps, goal["ops"]):
+        # the mutation lost the dangerous op → re-attach a minimal one so the goal survives
+        uuid = "{election_uuid}"
+        steps.append({
+            "step": len(steps) + 1, "phase": "Impact",
+            "action": "Відновлена цільова небезпечна операція (інваріант gen-1)",
+            "method": "POST", "endpoint": f"/helios/elections/{uuid}{goal['ops'][-1]}",
+            "payload": {"encrypted_vote": "{encrypted_vote}"} if goal["ballot"] else {},
+            "expected_result": "Небезпечна операція класу виконується",
+            "attacker_note": "Додано валідатором: мутація не повинна втрачати шкідливу мету."})
+        print(f"      ⚠️  validator: додано цільову операцію {goal['ops'][-1]} "
+              f"(мутація її втратила)")
+    if goal["ballot"]:
+        methods = [str(s.get("method", "")).upper() for s in steps]
+        cast_idx = next((i for i, s in enumerate(steps)
+                         if "/cast" in str(s.get("endpoint") or "")
+                         and "cast_confirm" not in str(s.get("endpoint") or "")), None)
+        if "BUILD_BALLOT" not in methods and cast_idx is not None:
+            steps.insert(cast_idx, {
+                "step": 0, "phase": "Preparation",
+                "action": "Збірка криптографічно валідного бюлетеня (інваріант класу)",
+                "method": "BUILD_BALLOT", "choice": 1, "store_as": "encrypted_vote",
+                "expected_result": "Валідний EncryptedVote у контексті",
+                "attacker_note": "Додано валідатором: vote-change потребує валідного ElGamal-бюлетеня."})
+            print("      ⚠️  validator: додано BUILD_BALLOT перед /cast (клас потребує валідного бюлетеня)")
+    # renumber steps for readability
+    for i, s in enumerate(steps, 1):
+        s["step"] = i
+    scenario["steps"] = steps
+    return scenario
 
 
 def generate_adaptive_scenario(attack_class: str, vector_filter: str = None) -> dict:
@@ -303,7 +363,7 @@ Helios URL: {HELIOS_BASE_URL}
       "step": 1,
       "phase": "Reconnaissance/Weaponization/Delivery/Exploitation/Installation/C2/Action",
       "action": "назва дії",
-      "method": "GET/POST/LOCAL/NETWORK",
+      "method": "GET/POST/LOCAL/NETWORK/BUILD_BALLOT",
       "endpoint": "/endpoint або null",
       "payload": {{}},
       "expected_result": "конкретний результат",
@@ -379,6 +439,10 @@ Helios URL: {HELIOS_BASE_URL}
         raise ValueError(f"Claude не повернув JSON після retry. stop_reason={message.stop_reason}, raw={raw[:100]!r}")
 
     scenario = json.loads(raw)
+
+    # Enforce the malicious-goal invariant (§4.4.4) programmatically: the mutation must
+    # still attempt the class's dangerous operation (+ a valid ballot for vote classes).
+    scenario = ensure_malicious_goal(scenario, attack_class)
 
     steps = scenario.get("steps", [])
     print(f"  [+] '{scenario.get('name')}'")
