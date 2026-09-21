@@ -57,7 +57,7 @@ def _latest(subdir: str, pattern: str):
 
 st.title("🛡 Цифрова імунна система — результати")
 st.caption("GenAI-моделювання кіберзагроз + inline-захист Helios e-voting · "
-           "дані з `reports/` (останні прогони)")
+           "дані узгодженого набору артефактів кампанії")
 
 # a SINGLE benchmark run (benchmark_2*.json) — NOT benchmark_aggregate_*.json, which
 # has no `metrics` block and would render every headline as 0.00
@@ -111,7 +111,7 @@ if bench:
     # headline ROC — realistic combined (main+borderline), median across runs if available
     med_auc, hint_auc = _agg("ROC-AUC (комб.)")
     auc = med_auc if med_auc is not None else (bench.get("roc_auc_combined") or bench.get("roc_auc") or 0)
-    c4.metric("ROC-AUC (реаліст.)", f"{auc:.3f}",
+    c4.metric("ROC-AUC (об’єдн.)", f"{auc:.3f}",
               help=(hint_auc or "Комбінований ROC (основна+гранична вибірка) — чесніший за точковий 1.0"))
     med_fpr, hint_fpr = _agg("FPR")
     c5.metric("FPR", f"{(med_fpr if med_fpr is not None else m.get('fpr', 0)):.2f}", help=hint_fpr or None)
@@ -156,9 +156,10 @@ if defense_base:
                    "(сторінка логіну/302/5xx) — захист у глибину, не DIS")
     n4.metric("🔴 Підміна голосу (vote_hash)", "—" if _changed is None else _changed,
               help="Змінені бюлетені між знімками before/after — реальний ущерб (B-full, вкрадені дані)")
-    st.caption("Захист у глибину: без ЦІС небезпечні запити доходять, але Helios сам "
-               "відхиляє більшість; реальну ж підміну голосу (валідні вкрадені дані) "
-               "ловить лише ballot-ownership антитіло ЦІС (вкладка «🔬 Ефективність захисту»).")
+    st.caption("Без ЦІС небезпечні запити досягають Helios, однак більшість із них відхиляється самим сервісом; "
+               "окремий сценарій підміни голосу з валідними викраденими обліковими даними блокується сервіс-специфічним"
+               "механізмом ballot ownership у ЦІС. "
+               )
 
 st.divider()
 
