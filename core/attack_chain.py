@@ -63,7 +63,7 @@ CHAINS = {
             "розвідка → підробка сесії → race condition ballot stuffing → маніпуляція tally. "
             "Контекст (session_id, voter_uuid, csrf_token) передається між фазами."
         ),
-        "mitre_chain": "T1040 → T1606.001 → T1565.001 → T1565.001",
+        # mitre_chain is derived from the per-phase "mitre" ids below (see loop)
         "phases": [
             {
                 "phase": 1,
@@ -113,7 +113,7 @@ CHAINS = {
             "підміна бюлетеня через JS injection → соціальна інженерія 'перепроголосування'. "
             "Кожна фаза посилює наступну."
         ),
-        "mitre_chain": "T1566.002 → T1530 → T1185 → T1557",
+        # mitre_chain is derived from the per-phase "mitre" ids below (see loop)
         "phases": [
             {
                 "phase": 1,

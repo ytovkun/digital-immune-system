@@ -74,6 +74,8 @@ STEPS = {
                        [PY, "core/red_team_agent.py", "all"]),
     "score":          ("Таблиці ризиків (з наявних reports/)",
                        [PY, "core/risk_scorer.py"]),
+    "risk_sensitivity": ("Аналіз чутливості ваг ризик-скору (±0.05)",
+                       [PY, "core/risk_sensitivity.py"]),
     "ire":            ("Offline-агрегація інцидентів (IRE)",
                        [PY, "core/immune_response_engine.py"]),
     "benchmark":      ("Labeled-бенчмарк через проксі :8000 (P/R/F1 + ДІ)",
@@ -150,7 +152,7 @@ PRESETS = {
     "campaign": ["clean", "clean_scenarios", "generate",
                  "execute_baseline", "execute_defended",
                  "adapt", "execute_defended_adaptive",
-                 "score", "ire", "benchmark",
+                 "score", "risk_sensitivity", "ire", "benchmark",
                  "sec_fpr", "sec_heldout", "sec_inject", "sec_flood", "redetection",
                  "defense_report_baseline", "defense_report_defended",
                  "coevolution_defended", "attack_flow", "metrics", "manifest"],
@@ -160,7 +162,7 @@ PRESETS = {
     # coevolve — the co-evolution cycle: mutate attacks under DIS blocking (from DEFENDED
     # results → escalate/refine/bypass) → run through the proxy → the generations metric.
     # Precondition: defended reports already exist (from a prior campaign). Needs the :8000 proxy.
-    "coevolve": ["adapt", "execute_defended", "defense_report_defended",
+    "coevolve": ["adapt", "execute_defended_adaptive", "defense_report_defended",
                  "coevolution_defended", "attack_flow"],
 }
 
@@ -233,10 +235,16 @@ def run_steps(steps: list, keep_going: bool, with_defense: bool) -> int:
               "(cd ~/helios-server && python manage.py runserver 8001).", file=sys.stderr)
 
     failed = []
+    proxy_ready = False
     try:
-        if need_proxy:
-            proc, owned = start_proxy()
         for name in steps:
+            # Start the proxy LAZILY — only right before the first step that needs :8000.
+            # Starting it up front would leave AIAnalyst holding logs/ai_memory.db open
+            # while the `clean` step deletes logs/ (reviewer #1). By then clean/generate/
+            # baseline have already run.
+            if need_proxy and not proxy_ready and name in DEFENSE_STEPS:
+                proc, owned = start_proxy()
+                proxy_ready = True
             spec = STEPS[name]
             label, argv = spec[0], spec[1]
             env_extra = spec[2] if len(spec) > 2 else None
@@ -278,10 +286,11 @@ def build_steps(args) -> list:
         if args.skip_generate and "generate" in steps:
             steps.remove("generate")
         if args.skip_execute:
-            for s in ("execute", "execute_baseline", "execute_defended"):
+            for s in ("execute", "execute_baseline", "execute_defended",
+                      "execute_defended_adaptive"):
                 if s in steps:
                     steps.remove(s)
-        if args.clean:
+        if args.clean and "clean" not in steps:   # campaign already starts with clean
             steps = ["clean"] + steps
     return steps
 

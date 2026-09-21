@@ -87,8 +87,6 @@ if __name__ == "__main__":
         flag = " --keep-scenarios" if keep_scenarios else ""
         print(f"\n  Запусти  python utils/cleaner.py{flag} --yes  щоб видалити")
         sys.exit(0)
-    confirm = input("\n  Видалити? (yes/no): ").strip().lower()
-    if confirm != "yes":
-        print("  Скасовано.")
-        sys.exit(0)
+    # --yes means "confirmed, non-interactive" (already checked above via dry_run):
+    # no extra prompt, so `run_all campaign` / CI runs without blocking on input().
     run_cleanup(to_delete, sub_dirs, cfg)
