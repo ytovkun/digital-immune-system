@@ -15,6 +15,7 @@ Run:  python immune_system/benchmark.py [N]      (N — scale, default 1)
 Out:  metrics + reports/benchmark_{ts}.json
 """
 
+import os
 import sys
 import json
 import time
@@ -308,21 +309,32 @@ def _authenticated_session(client_ip: str) -> requests.Session:
 
 
 def _reset_adaptive_state():
-    """Best-effort: ask the proxy to clear AI-learned signatures + verdict cache so
-    this labeled set is INDEPENDENT of any prior run (a signature learned earlier must
-    not pre-block a sample here — reviewer #4). No-op unless the proxy has
-    DIS_TEST_RESET_ENABLED=1; failure is non-fatal."""
+    """Clear the proxy's adaptive state so this labeled set is INDEPENDENT of any prior
+    run. Independence is REQUIRED for a valid benchmark: a signature learned earlier
+    would pre-block a sample here and inflate Recall. If the reset does not succeed
+    (proxy started without DIS_TEST_RESET_ENABLED=1, or unreachable) the run is NOT
+    silently continued — it aborts, because the numbers would not be trustworthy.
+    Override for a quick non-strict run: BENCHMARK_ALLOW_DIRTY=1."""
+    allow_dirty = os.environ.get("BENCHMARK_ALLOW_DIRTY", "").lower() in ("1", "true", "yes")
     try:
         r = requests.post(f"{PROXY}/__immune__/reset", timeout=5)
         if r.status_code == 200:
             j = r.json()
             print(f"  🧹 Проксі-стан скинуто: learned={j.get('learned_cleared')}, "
-                  f"cache={j.get('cache_cleared')}")
-        else:
-            print("  ℹ️  Reset проксі недоступний (DIS_TEST_RESET_ENABLED=1?) — "
-                  "набори можуть бути залежними")
-    except requests.exceptions.RequestException:
-        pass
+                  f"cache={j.get('cache_cleared')}, owners={j.get('ballot_owners_cleared')}")
+            return
+        reason = f"HTTP {r.status_code} (запусти проксі з DIS_TEST_RESET_ENABLED=1)"
+    except requests.exceptions.RequestException as e:
+        reason = f"{type(e).__name__} (проксі недоступний)"
+    if allow_dirty:
+        print(f"  ⚠️  Reset НЕ виконано ({reason}); BENCHMARK_ALLOW_DIRTY=1 → "
+              "продовжую, але прогін НЕ гарантовано незалежний")
+        return
+    print(f"\n  ❌ Reset адаптивного стану НЕ виконано: {reason}")
+    print("     Бенчмарк перервано — без чистого стану числа невалідні.")
+    print("     Запусти проксі з DIS_TEST_RESET_ENABLED=1, або BENCHMARK_ALLOW_DIRTY=1 для "
+          "нестрогого прогону.")
+    sys.exit(2)
 
 
 def _needs_raw_path(path: str) -> bool:

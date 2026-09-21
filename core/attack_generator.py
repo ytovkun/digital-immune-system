@@ -564,7 +564,7 @@ Election UUID: {context.get('election_uuid', ELECTION_UUID)}
   "linddun_category": "{attack_info['linddun']}",
   "linddun_threat": "конкретна загроза приватності для цього сценарію",
   "linddun_impact": "вплив на таємницю голосування або приватність виборця",
-  "severity": "Critical/High/Medium",
+  "severity": "Critical/High/Medium/Low",
   "target_component": "конкретний компонент або людина",
   "description": "технічно детальний опис (5-7 речень)",
   "preconditions": {json.dumps(attack_info['preconditions'], ensure_ascii=False)},

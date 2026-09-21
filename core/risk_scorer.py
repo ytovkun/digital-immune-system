@@ -79,6 +79,37 @@ def catalog_severity(report: dict) -> str:
     sev = CATALOG_SEVERITY.get(ac) or report.get("severity", "High")
     return str(sev).capitalize()
 
+
+# Per-CLASS semantic metadata catalog (CIA / LINDDUN / base ATT&CK), frozen from the
+# BASE (gen-0) report of each class. Like severity, these must NOT come from the
+# per-report field: an adaptive (gen-1) mutation re-labelled by the LLM would otherwise
+# shift the composite score for reasons unrelated to executability. Built once per run
+# by build_class_meta(); score_report reads through _class_meta().
+_CLASS_META = {}
+
+
+def build_class_meta(reports) -> None:
+    """Freeze CIA/LINDDUN/base-ATT&CK per attack_class from its BASE (non-adaptive)
+    report, so gen-0 and gen-1 of the same class share identical semantic metadata."""
+    _CLASS_META.clear()
+    for r in reports:
+        ac = r.get("attack_class")
+        if not ac or r.get("adaptation_mode"):
+            continue                       # only base scenarios are canonical
+        _CLASS_META.setdefault(ac, {
+            "affected_cia":        r.get("affected_cia", {}),
+            "linddun_category":    r.get("linddun_category", "L"),
+            "mitre_technique_id":  r.get("mitre_technique_id", ""),
+        })
+
+
+def _class_meta(report: dict, field: str, default):
+    """Class-level value for a semantic field (Table 4.3), else the report's own."""
+    m = _CLASS_META.get(report.get("attack_class"))
+    if m and m.get(field) not in (None, "", {}):
+        return m[field]
+    return report.get(field, default)
+
 VERDICT_FACTOR = {
     "EXECUTED":   1.00,
     "PARTIAL":    0.65,
@@ -154,11 +185,13 @@ def execution_factor(report: dict) -> float:
 
 
 def score_report(report: dict) -> dict:
-    cia     = cia_score(report.get("affected_cia", {}))
-    linddun = linddun_score(report.get("linddun_category", "L"))
+    # CIA / LINDDUN / base ATT&CK are taken at the CLASS level (frozen from gen-0),
+    # not from the per-report LLM labels — see _class_meta / build_class_meta.
+    cia     = cia_score(_class_meta(report, "affected_cia", {}))
+    linddun = linddun_score(_class_meta(report, "linddun_category", "L"))
     exec_f   = execution_factor(report)
     severity = SEVERITY_MAP.get(catalog_severity(report), 0.75)
-    mitre_id  = report.get("mitre_technique_id", "")
+    mitre_id  = _class_meta(report, "mitre_technique_id", "")
     mitre_b   = next((v for k, v in MITRE_BONUS_MAP.items() if mitre_id.startswith(k)), 0.05)
     raw   = (cia * 0.35 + linddun * 0.25 + mitre_b * 0.15 + exec_f * 0.25) * severity
     score = round(raw * 10, 2)
@@ -213,6 +246,7 @@ def load_and_score(include_adaptive: bool = True) -> list:
         if ac:
             # key = (class, adaptiveness): base and adaptive versions are separate rows
             latest[(ac, is_adaptive)] = r
+    build_class_meta(latest.values())      # freeze CIA/LINDDUN/ATT&CK per class first
     scores = [score_report(r) for r in latest.values()]
     # group by class, base before adaptive (to compare evolution)
     return sorted(scores, key=lambda x: (x["attack_class"], x["is_adaptive"]))

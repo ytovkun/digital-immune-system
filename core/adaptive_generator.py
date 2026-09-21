@@ -295,7 +295,7 @@ Helios URL: {HELIOS_BASE_URL}
   "mitre_technique_name": "...",
   "linddun_category": "...",
   "linddun_threat": "...",
-  "severity": "Critical/High/Medium",
+  "severity": "Critical/High/Medium/Low",
   "target_component": "...",
   "description": "опис що конкретно змінено і чому",
   "steps": [

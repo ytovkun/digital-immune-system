@@ -83,6 +83,36 @@ killchain, kc_f = _latest("killchain", "attack_flow.json")
 # Re-detection through immune memory (section 5.1)
 redetect, rd_f = _latest("redetection", "redetection_*.json")
 
+# ─── Campaign binding: tie the shown artifacts to one manifest set ─────────────
+# The run-manifest records the EXACT filenames of one coherent campaign. We show its
+# id and check that the artifacts loaded above match that set — so "узгоджений набір"
+# is verifiable, not just asserted (reviewer 4.6.5 / 4.7.1).
+_manifest = None
+_mf = sorted(glob.glob(str(REPORTS / "run_manifest.json")))
+if _mf:
+    try:
+        _manifest = json.load(open(_mf[0], encoding="utf-8"))
+    except (OSError, ValueError):
+        _manifest = None
+if _manifest:
+    af = _manifest.get("artifact_files", {})
+    loaded = {"benchmark": bench_f, "defense_defended": defd_f, "metrics": met_f,
+              "risk": risk_f, "coevolution": coevo_f, "siem": siem_f, "ire": ire_f}
+    mism = [k for k, v in loaded.items()
+            if v and af.get(k) and v != af.get(k)]
+    cid = _manifest.get("campaign_id", "?")
+    commit = _manifest.get("git_commit", "?")
+    if mism:
+        st.warning(f"⚠️ Артефакти на дашборді НЕ повністю збігаються з маніфестом кампанії "
+                   f"`{cid}` (commit {commit}). Розбіжність: {', '.join(mism)}. "
+                   f"Перезапусти `run_manifest.py` після повного прогону кампанії.")
+    else:
+        st.success(f"✅ Узгоджений набір кампанії `{cid}` · commit `{commit}` · "
+                   f"модель {_manifest.get('ai_model', '?')}")
+else:
+    st.info("ℹ️ Немає run_manifest.json — прожени `python utils/run_manifest.py`, "
+            "щоб зв'язати артефакти в один набір кампанії.")
+
 
 # ─── KPI row ──────────────────────────────────────────────────────────────────
 
@@ -148,18 +178,18 @@ if defense_base:
     n1, n2, n3, n4 = st.columns(5)[:4]
     n1.metric("Детекція атак", "0%",
               help="Сирий Helios не має детектора загроз — не блокує нічого")
-    n2.metric("Крит-операцій виконано", _br,
-              help="Підтверджено виконаних на backend (2xx з реальними даними). "
-                   "Реальний ефект підміни голосу підтверджується зміною vote_hash, а не HTTP-статусом.")
-    n3.metric("Відхилив сам Helios", _other,
-              help="Крит-операція була, але контроль доступу/крипта Helios її відхилили "
-                   "(сторінка логіну/302/5xx) — захист у глибину, не DIS")
-    n4.metric("🔴 Підміна голосу (vote_hash)", "—" if _changed is None else _changed,
-              help="Змінені бюлетені між знімками before/after — реальний ущерб (B-full, вкрадені дані)")
-    st.caption("Без ЦІС небезпечні запити досягають Helios, однак більшість із них відхиляється самим сервісом; "
-               "окремий сценарій підміни голосу з валідними викраденими обліковими даними блокується сервіс-специфічним"
-               "механізмом ballot ownership у ЦІС. "
-               )
+    n2.metric("Крит-кроки з HTTP-підтвердженням виконання", _br,
+              help="Критичні кроки, для яких HTTP-відповідь підтверджує виконання операції на "
+                   "backend (2xx з реальними даними). Прикладний ефект підтверджується зміною vote_hash.")
+    n3.metric("Крит-кроки без HTTP-підтвердження виконання", _other,
+              help="HTTP-відповідь НЕ підтверджує виконання (сторінка логіну/302/4xx/5xx). Це не "
+                   "доказ семантичного відхилення Helios у кожному випадку, а відсутність підтвердження.")
+    n4.metric("🔴 Підтверджений ефект: зміна vote_hash", "—" if _changed is None else _changed,
+              help="Змінені бюлетені між знімками before/after — реальний прикладний ефект "
+                   "(сценарій vote_change_stolen_creds, валідні викрадені дані).")
+    st.caption("У baseline запити не блокуються ЦІС. Для частини критичних кроків HTTP-відповідь не "
+               "підтверджує виконання операції на рівні Helios; окремо для сценарію "
+               "`vote_change_stolen_creds` прикладний ефект підтверджено зміною `vote_hash`.")
 
 st.divider()
 
@@ -200,21 +230,20 @@ with tabs[0]:
         st.caption(f"Атак оцінено: {risk.get('total', len(scores))} = "
                    f"{_n_base} базових + {_n_adap} адаптивних (gen-0 + gen-1).")
 
-        with st.expander("📐 Методологія оцінки ризику (OWASP Risk Rating) — фактори та формула"):
+        with st.expander("📐 Внутрішня експериментальна метрика ризику — фактори та формула"):
             st.markdown(
+                "Метрика має **авторський експериментальний характер** і **не є** реалізацією "
+                "CVSS чи OWASP Risk Rating. Вона використовується лише для внутрішнього "
+                "зіставлення сценаріїв у межах цього експерименту.\n\n"
                 "**Формула** (`core/risk_scorer.py`):\n\n"
                 "`Risk = (CIA×0.35 + LINDDUN×0.25 + MITRE×0.15 + Execution×0.25) × Severity × 10`\n\n"
-                "Це канонічний **OWASP Risk Rating**: `Risk = Likelihood × Impact`, де\n"
-                "- **Impact** = технічний вплив **CIA** (Confidentiality/Integrity/Availability) "
-                "+ приватнісний **LINDDUN** (деанонімізація виборця);\n"
-                "- **Likelihood** = **Execution** (спостережувана успішність атаки у прогонах) "
-                "× **MITRE** (зрілість техніки ATT&CK);\n"
-                "- **Severity** — категорійний множник під критичність e-voting.\n\n"
-                "**Чому OWASP Risk Rating, а не CVSS:** CVSS оцінює серйозність *окремої "
-                "вразливості* (статичний бал), а нам треба ризик *реалізованого сценарію атаки* "
-                "з урахуванням **успішності** у прогонах та **приватності** виборця (LINDDUN) — "
-                "це саме сфера OWASP Risk Rating. CVSS застосовний на рівні `VULN-xx`. "
-                "Деталі — `docs/RISK_AND_COVERAGE.md`.")
+                "- **CIA** — технічний вплив (Confidentiality/Integrity/Availability);\n"
+                "- **LINDDUN** — приватнісна складова (деанонімізація виборця);\n"
+                "- **Execution** — спостережувана успішність атаки у прогонах;\n"
+                "- **MITRE** — зрілість техніки ATT&CK;\n"
+                "- **Severity** — категорійний множник за класом атаки (каталог, табл. 4.3).\n\n"
+                "Ваги 0.35/0.25/0.15/0.25 — авторський вибір; їх вплив перевірено аналізом "
+                "чутливості (±0.05, див. Розділ 5). Деталі — `docs/RISK_AND_COVERAGE.md`.")
 
         # chart: score by class, base vs adaptive
         chart = alt.Chart(df).mark_bar().encode(

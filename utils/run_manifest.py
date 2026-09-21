@@ -43,6 +43,30 @@ def _latest(sub, pat):
         return None
 
 
+def _latest_name(sub, pat):
+    """Exact filename of the artifact the manifest actually used (for campaign binding —
+    so the reported numbers are tied to a concrete, named set of files, not a vague
+    'latest')."""
+    fs = sorted(glob.glob(str(REPORTS / sub / pat)))
+    return Path(fs[-1]).name if fs else None
+
+
+def _artifact_files() -> dict:
+    """The concrete files this manifest binds together (one coherent campaign set)."""
+    return {
+        "benchmark":          _latest_name("benchmark", "benchmark_2*.json"),
+        "benchmark_aggregate": _latest_name("benchmark", "benchmark_aggregate_*.json"),
+        "defense_baseline":   _latest_name("defense", "defense_effectiveness_baseline_*.json"),
+        "defense_defended":   _latest_name("defense", "defense_effectiveness_defended_*.json"),
+        "coevolution":        _latest_name("coevolution", "coevolution_defended_*.json"),
+        "metrics":            _latest_name("metrics", "metrics_summary_*.json"),
+        "risk":               _latest_name("risk", "risk_assessment_*.json"),
+        "risk_sensitivity":   _latest_name("risk", "risk_sensitivity_*.json"),
+        "ire":                _latest_name("ire", "ire_report_*.json"),
+        "siem":               _latest_name("siem", "siem_comparison_*.json"),
+    }
+
+
 def collect() -> dict:
     # a SINGLE benchmark run (benchmark_2*.json — exclude benchmark_aggregate_*.json,
     # which has no metrics block and would zero the manifest)
@@ -56,8 +80,11 @@ def collect() -> dict:
     bm = b.get("metrics", {})
     apt = b.get("apt_detection", {})
     sec = {k: v.get("value") for k, v in (mt.get("security_tests", {}) or {}).items()}
+    artifacts = _artifact_files()
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "campaign_id": datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S"),
+        "artifact_files": artifacts,      # the concrete named set this manifest binds
         "git_commit": _git_commit(),
         "python": sys.version.split()[0],
         "ai_model": _cfg.get("claude", {}).get("model", "?"),

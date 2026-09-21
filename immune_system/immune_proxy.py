@@ -923,10 +923,9 @@ def proxy(path):
               f"{len(_eps)} endpoints за {NONHUMAN_TEMPO_WINDOW_SEC}с "
               f"→ рішення виносить ШІ", flush=True)
 
-    # Read the body ONCE (Flask caches get_data — forward gets the same).
-    # The backstop scans DEEPER (payload not only at the start), the AI — only a 2KB preview.
+    # Read the body ONCE (Flask caches get_data — forward gets the same). The backstop
+    # and AIAnalyst both receive this fuller text; AIAnalyst redacts then truncates it.
     _raw_body = request.get_data(as_text=True)[:BACKSTOP_BODY_BYTES] if request.content_length else ""
-    body = _raw_body[:AI_BODY_PREVIEW]   # превʼю для ШІ
 
     # ─── Deterministic PAYLOAD BACKSTOP (path OR body) ────────────────────────
     # Guarantee: the AI cannot be tricked (prompt-injection) into passing an UNAMBIGUOUS
@@ -1003,7 +1002,11 @@ def proxy(path):
             # NON-HUMAN TEMPO before a voter action (4+ endpoints <2s) — a strong APT signal
             "nonhuman_tempo": nonhuman_tempo,
         }
-        aiDecision = analyst.analyze(method, inspectPath, headers, body, behavior)
+        # Pass the FULLER backstop-body (not the pre-truncated 2KB preview): AIAnalyst
+        # must run privacy redaction on the full text BEFORE it truncates for the prompt,
+        # otherwise a UUID/credential past the 2KB cut would be dropped by length limiting
+        # instead of being redacted. AIAnalyst does redaction → sanitization → truncation.
+        aiDecision = analyst.analyze(method, inspectPath, headers, _raw_body, behavior)
         threat_score = float(aiDecision.get("confidence") or 0.0)
         # L1 learning: the AI synthesized a signature of a new pattern → FastReflex will
         # catch repeats instantly (adaptive→innate immunity)

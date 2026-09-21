@@ -390,7 +390,10 @@ def execute_step(session: requests.Session, step: dict, context: dict) -> dict:
         "status_code": None,
         "success": False,
         "success_reason": "",
-        "is_simulated": method in ("LOCAL", "NETWORK"),
+        # BUILD_BALLOT is a LOCAL technical step (no HTTP to Helios), so it is
+        # "simulated" for the state model — otherwise attack_flow, seeing status_code
+        # None, would mislabel a successful local ballot build as not_executed.
+        "is_simulated": method in ("LOCAL", "NETWORK", "BUILD_BALLOT"),
         "response_preview": "",
         "response_length": 0,
         "extracted": {},
@@ -862,6 +865,23 @@ if __name__ == "__main__":
         if arg in ("voter", "system"):
             subdir = f"{SCENARIOS_DIR}/{arg}"
             reports = run_scenarios_from_dir(subdir)
+            print_summary(reports)
+
+        elif arg == "base":
+            # ONLY base (gen-0) scenarios — explicitly EXCLUDING */adaptive/*. This makes
+            # a clean generational campaign possible (base first, then adaptive), instead
+            # of `all` recursively mixing base + adaptive + any stale files.
+            base_files = sorted(
+                f for f in Path(SCENARIOS_DIR).rglob("*.json")
+                if "adaptive" not in f.parts and "report" not in f.name)
+            if not base_files:
+                print("[-] Базових сценаріїв не знайдено. Спочатку attack_generator.py")
+                sys.exit(1)
+            print(f"[*] Базових (gen-0) сценаріїв: {len(base_files)}")
+            reports = []
+            for f in base_files:
+                with open(f, encoding="utf-8") as fp:
+                    reports.append(execute_scenario(json.load(fp)))
             print_summary(reports)
 
         elif arg == "adaptive":

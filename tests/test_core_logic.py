@@ -180,3 +180,19 @@ def test_parse_linddun_maps_keywords():
     assert "Dd" in parsed
 
     assert rs.parse_linddun("щось невідоме") == ["L"]
+
+
+def test_class_meta_freezes_cia_linddun_across_generations():
+    # gen-1 mutation re-labelled CIA as Low, but the score must use gen-0's canonical
+    # CIA (frozen per class) so a mutation cannot shift the score via re-labelling.
+    base = {"attack_class": "ballot_stuffing",
+            "affected_cia": {"integrity": "Critical"}, "linddun_category": "I",
+            "mitre_technique_id": "T1565.001"}
+    adap = {"attack_class": "ballot_stuffing", "adaptation_mode": "refine",
+            "affected_cia": {"integrity": "Low"}, "linddun_category": "D",
+            "mitre_technique_id": "T1499"}
+    rs.build_class_meta([base, adap])
+    assert rs._class_meta(adap, "affected_cia", {}) == {"integrity": "Critical"}
+    assert rs._class_meta(adap, "linddun_category", "L") == "I"
+    assert rs._class_meta(adap, "mitre_technique_id", "") == "T1565.001"
+    rs.build_class_meta([])          # reset module state so other tests are unaffected

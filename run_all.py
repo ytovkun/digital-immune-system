@@ -89,12 +89,20 @@ STEPS = {
     "manifest":       ("Run-маніфест (git-commit + модель + зведення метрик)",
                        [PY, "utils/run_manifest.py"]),
     # ── Campaign steps: two run branches — without defense vs with defense ──
-    "execute_baseline": ("Атаки проти СИРОГО Helios :8001 (BASELINE, без захисту)",
-                         [PY, "core/red_team_agent.py", "all"],
+    "clean_scenarios": ("Видалити stale-сценарії (adaptive + згенеровані base; ручні лишити)",
+                        [PY, "utils/clean_scenarios.py", "--yes"]),
+    # gen-0 (base only) — baseline then defended
+    "execute_baseline": ("Атаки gen-0 (base) проти СИРОГО Helios :8001 (BASELINE)",
+                         [PY, "core/red_team_agent.py", "base"],
                          {"HELIOS_BASE_URL": "http://localhost:8001",
                           "REDTEAM_REPORT_SUBDIR": "baseline", "REDTEAM_DEFENDED": "0"}),
-    "execute_defended": ("Атаки ЧЕРЕЗ ЦІС-проксі :8000 (DEFENDED, із захистом)",
-                         [PY, "core/red_team_agent.py", "all"],
+    "execute_defended": ("Атаки gen-0 (base) ЧЕРЕЗ ЦІС-проксі :8000 (DEFENDED)",
+                         [PY, "core/red_team_agent.py", "base"],
+                         {"HELIOS_BASE_URL": "http://localhost:8000",
+                          "REDTEAM_REPORT_SUBDIR": "defended", "REDTEAM_DEFENDED": "1"}),
+    # gen-1 (adaptive only) — mutated from gen-0 defended results, run through the proxy
+    "execute_defended_adaptive": ("Атаки gen-1 (adaptive) ЧЕРЕЗ ЦІС-проксі :8000 (DEFENDED)",
+                         [PY, "core/red_team_agent.py", "adaptive"],
                          {"HELIOS_BASE_URL": "http://localhost:8000",
                           "REDTEAM_REPORT_SUBDIR": "defended", "REDTEAM_DEFENDED": "1"}),
     "defense_report_baseline": ("Звіт: атаки проти НЕзахищеного Helios (baseline)",
@@ -123,6 +131,7 @@ ORDER = ["generate", "execute", "score", "ire",
          "benchmark", "demo", "defense_report", "coevolution", "metrics"]
 # Steps that require the :8000 proxy running
 DEFENSE_STEPS = {"benchmark", "demo", "defense_report", "execute_defended",
+                 "execute_defended_adaptive",
                  "sec_fpr", "sec_heldout", "sec_inject", "sec_flood", "redetection"}
 SECURITY_STEPS = ["sec_fpr", "sec_heldout", "sec_inject", "sec_flood"]
 
@@ -134,7 +143,13 @@ PRESETS = {
     # generate → baseline attacks(:8001) → defended attacks(:8000) → risks → IRE →
     # benchmark(P/R/F1/ROC) → baseline report → defended report → co-evolution → metrics.
     # The :8000 proxy is started automatically (execute_defended/benchmark need it).
-    "campaign": ["generate", "execute_baseline", "execute_defended",
+    # Clean generational campaign (reviewer: isolation base→gen-0→adapt→gen-1):
+    #   clean reports/logs → drop stale scenarios (keep hand-written) → generate fresh
+    #   base → gen-0 baseline+defended → adapt CURRENT gen-0 → gen-1 defended → reports.
+    # base and adaptive run EXPLICITLY (red_team `base` / `adaptive`), never `all *.json`.
+    "campaign": ["clean", "clean_scenarios", "generate",
+                 "execute_baseline", "execute_defended",
+                 "adapt", "execute_defended_adaptive",
                  "score", "ire", "benchmark",
                  "sec_fpr", "sec_heldout", "sec_inject", "sec_flood", "redetection",
                  "defense_report_baseline", "defense_report_defended",
@@ -180,7 +195,11 @@ def start_proxy():
         print("  ℹ️  Проксі вже працює на :8000 — використовую наявний.")
         return None, False
     print("  ▶ Стартую immune_proxy на :8000 (фон)...", flush=True)
-    proc = subprocess.Popen([PY, "immune_system/immune_proxy.py"], cwd=str(ROOT))
+    # Enable the reset hook so benchmark/security tests can enforce a clean, independent
+    # adaptive state (reviewer #19) — otherwise their reset silently fails and a run may
+    # be contaminated by accumulated state.
+    _proxy_env = {**os.environ, "DIS_TEST_RESET_ENABLED": "1"}
+    proc = subprocess.Popen([PY, "immune_system/immune_proxy.py"], cwd=str(ROOT), env=_proxy_env)
     for _ in range(60):   # ~30s
         if _url_up(PROXY_STATS_URL):
             print("  ✓ Проксі готовий (:8000).", flush=True)

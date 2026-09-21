@@ -69,6 +69,7 @@ CHAINS = {
                 "phase": 1,
                 "name": "Reconnaissance",
                 "attack_class": "voter_timing_deanonymization",
+                "mitre": "T1040",
                 "description": "Збір публічних даних: voter list, ballot board, cast_at timestamps",
                 "context_provides": ["voter_uuid", "session_id"],
             },
@@ -76,6 +77,7 @@ CHAINS = {
                 "phase": 2,
                 "name": "Initial Access — Session Forgery",
                 "attack_class": "session_forgery",
+                "mitre": "T1606.001",
                 "description": "Підробка Django session cookie через SECRET_KEY='replaceme'",
                 "context_uses": ["voter_uuid"],
                 "context_provides": ["session_id", "csrf_token"],
@@ -84,6 +86,7 @@ CHAINS = {
                 "phase": 3,
                 "name": "Election Tampering — Ballot Stuffing",
                 "attack_class": "ballot_stuffing",
+                "mitre": "T1565.001",
                 "description": "TOCTOU race condition на /cast_confirm з накопиченим session_id",
                 "context_uses": ["session_id", "csrf_token", "voter_uuid"],
                 "context_provides": [],
@@ -92,6 +95,7 @@ CHAINS = {
                 "phase": 4,
                 "name": "Impact — Tally Manipulation",
                 "attack_class": "tally_manipulation",
+                "mitre": "T1565.001",
                 "description": "Підміна vote ciphertext перед encrypt_tally (verify_p=False)",
                 "context_uses": ["session_id"],
                 "context_provides": [],
@@ -115,6 +119,7 @@ CHAINS = {
                 "phase": 1,
                 "name": "Credential Harvest",
                 "attack_class": "voter_phishing_credential",
+                "mitre": "T1566.002",
                 "description": "Масовий збір voter_login_id + voter_password через клонований портал",
                 "context_provides": ["voter_uuid", "session_id"],
             },
@@ -122,6 +127,7 @@ CHAINS = {
                 "phase": 2,
                 "name": "Coercion via Receipt",
                 "attack_class": "voter_coercion_receipt",
+                "mitre": None,
                 "description": "Примус виборця розкрити audit randomness — криптографічний доказ голосу",
                 "context_uses": ["voter_uuid"],
                 "context_provides": [],
@@ -130,6 +136,7 @@ CHAINS = {
                 "phase": 3,
                 "name": "Device Compromise",
                 "attack_class": "voter_device_js_injection",
+                "mitre": "T1185",
                 "description": "Man-in-Browser: підміна plaintext вибору до ElGamal-шифрування",
                 "context_uses": ["session_id"],
                 "context_provides": [],
@@ -138,6 +145,7 @@ CHAINS = {
                 "phase": 4,
                 "name": "Social Engineering Fallback",
                 "attack_class": "voter_social_engineering_vote_change",
+                "mitre": "T1566.002",
                 "description": "Фальшивий 'технічний збій' — виборець голосує повторно на підробленому порталі",
                 "context_uses": [],
                 "context_provides": [],
@@ -145,6 +153,12 @@ CHAINS = {
         ],
     },
 }
+
+# Derive mitre_chain from the per-phase MITRE ids so the string can never go stale
+# (a phase without a direct ATT&CK technique is shown as "—", e.g. coercion).
+for _chain in CHAINS.values():
+    _chain["mitre_chain"] = " → ".join(
+        (ph.get("mitre") or "—") for ph in _chain["phases"])
 
 
 # ─── Loading a scenario ───────────────────────────────────────────────────────
