@@ -444,31 +444,42 @@ with tabs[3]:
         sd = defense_def.get("summary", {})
         bb, br = sb.get("critical_ops_blocked", 0), sb.get("critical_ops_reached", 0)
         db, dr = sd.get("critical_ops_blocked", 0), sd.get("critical_ops_reached", 0)
-        st.markdown("**Небезпечні операції: без захисту → із захистом**")
-        x, y = st.columns(2)
-        x.metric("🔴 БЕЗ захисту (сирий Helios)",
-                 f"{bb}/{bb+br} крит-оп.",
-                 f"{(bb/(bb+br)*100 if bb+br else 0):.0f}% заблоковано")
-        y.metric("🛡 ІЗ захистом (через ЦІС)",
-                 f"{db}/{db+dr} крит-оп.",
-                 f"{(db/(db+dr)*100 if db+dr else 0):.0f}% заблоковано")
-        st.caption(f"{bb+br} — це критичні ОПЕРАЦІЇ (POST /cast, /encrypt_tally, "
-                   f"/upload-decryption) у базовому наборі, НЕ кількість атак. "
-                   f"Одна атака може містити кілька крит-операцій (напр. cast + cast_confirm).")
-        cmp_df = pd.DataFrame([
-            {"Режим": "без захисту", "Заблоковано": bb, "Пропущено": br},
-            {"Режим": "із захистом", "Заблоковано": db, "Пропущено": dr},
-        ]).melt("Режим", var_name="Результат", value_name="Операцій")
+        # crit ops that neither DIS-blocked nor demonstrably executed — in baseline these
+        # were rejected by Helios' OWN access control/crypto (defense-in-depth). Shown so
+        # the baseline bar is not misleadingly empty.
+        bo = sb.get("critical_ops_other", 0)
+        do = sd.get("critical_ops_other", 0)
+        st.markdown("**Критичні операції із захистом (defended) — розподіл результату**")
+        # Reviewer 5.4: DO NOT show the misleading "baseline N → defended 0" comparison.
+        # Show the DEFENDED breakdown (blocked / not-confirmed / executed); baseline is a
+        # note, since without the DIS nothing is DIS-blocked (Helios itself rejects).
+        m1, m2, m3 = st.columns(3)
+        m1.metric("🛡 Заблоковано ЦІС", db,
+                  help="Критичні операції, зупинені проксі на вході (403).")
+        m2.metric("◻️ Без підтвердженого виконання", do,
+                  help="HTTP-відповідь не підтверджує виконання (сторінка логіну/302/4xx/5xx).")
+        m3.metric("🔴 Підтверджено виконаних", dr,
+                  help="2xx з реальними даними на backend. Прикладний ефект — через vote_hash.")
+        brk = pd.DataFrame([
+            {"Результат": "Заблоковано ЦІС", "Операцій": db},
+            {"Результат": "Без підтвердженого виконання", "Операцій": do},
+            {"Результат": "Підтверджено виконаних", "Операцій": dr},
+        ])
         st.altair_chart(
-            alt.Chart(cmp_df).mark_bar().encode(
-                # no dot in the field name: Altair treats "." as a nested field → empty
+            alt.Chart(brk).mark_bar().encode(
                 x=alt.X("Операцій:Q", title="Крит. операцій"),
-                y=alt.Y("Режим:N", sort=["без захисту", "із захистом"]),
-                color=alt.Color("Результат:N", scale=alt.Scale(
-                    domain=["Заблоковано", "Пропущено"], range=["#2ca02c", "#d62728"])),
-                tooltip=["Режим", "Результат", "Операцій"]
-            ).properties(height=140, title="Критичні операції: щит проти меча"),
+                y=alt.Y("Результат:N", sort=["Заблоковано ЦІС",
+                        "Без підтвердженого виконання", "Підтверджено виконаних"], title=None),
+                color=alt.Color("Результат:N", legend=None, scale=alt.Scale(
+                    domain=["Заблоковано ЦІС", "Без підтвердженого виконання", "Підтверджено виконаних"],
+                    range=["#2ca02c", "#9aa0a6", "#d62728"])),
+                tooltip=["Результат", "Операцій"]
+            ).properties(height=130, title="Критичні операції (defended gen-0)"),
             use_container_width=True)
+        st.caption(f"Без захисту ЦІС не задіяний: DIS-block = {bb}; критичні операції відхиляє "
+                   f"сам Helios (контроль доступу/крипта, {bo} крит-кроків). Реальний прикладний "
+                   f"ефект атаки vote_change_stolen_creds (B-full) підтверджено ОКРЕМО зміною "
+                   f"vote_hash до/після, а не HTTP-статусом.")
         st.divider()
 
     if not defense:
@@ -609,7 +620,8 @@ with tabs[5]:
         s = a["summary"]
         k1, k2, k3, k4 = st.columns(4)
         k1.metric("🟩 Заблоковано", s.get("blocked", 0))
-        k2.metric("🟥 Витік (крит.оп)", s.get("leaked", 0))
+        k2.metric("🟥 Крит. без підтвердження", s.get("leaked", 0),
+                  help="Крит-кроки, що дійшли до backend, але HTTP-відповідь не підтверджує виконання")
         k3.metric("🟦 Безпечно дійшло", s.get("allowed", 0))
         k4.metric("⬜ Симуляція", s.get("simulated", 0) + s.get("not_executed", 0))
 
@@ -656,33 +668,33 @@ with tabs[6]:
             tot = d["blocked"] + reached
             # column order: identifier → verdicts (block/leak/reached) → coverage → volume
             rows.append({"Endpoint": ep,
-                         "🟩 Блок": d["blocked"], "🟥 Витік (крит)": d["leaked"],
+                         "🟩 Блок": d["blocked"], "🟥 Крит. без підтвердження": d["leaked"],
                          "🟦 Безпеч. дійшло": d["allowed"],
                          "Покриття, %": round(d["blocked"] / tot * 100) if tot else None,
                          "Кроків": tot + d["sim"],
                          "Класів атак": len(d["classes"])})
         # worst-first: first endpoints with LEAKS of crit ops, then by number of attack steps
         df = pd.DataFrame(rows).sort_values(
-            ["🟥 Витік (крит)", "Кроків"], ascending=[False, False])
+            ["🟥 Крит. без підтвердження", "Кроків"], ascending=[False, False])
         x, y, z = st.columns(3)
         x.metric("Endpoint під атакою", len(agg))
         y.metric("Класів атак усього",
                  len({atk["attack_class"] for atk in killchain["attacks"]}))
-        z.metric("🟥 Витоків крит-операцій", sum(d["leaked"] for d in agg.values()),
-                 help="Небезпечних операцій, що дійшли до Helios (у defended = 0)")
+        z.metric("🟥 Крит. без підтвердження", sum(d["leaked"] for d in agg.values()),
+                 help="Критичні кроки, що дійшли до backend, але HTTP-відповідь не підтверджує виконання")
         st.dataframe(df, use_container_width=True, hide_index=True)
-        st.caption("↓ Відсортовано worst-first: спершу endpoint із витоками крит-операцій, "
+        st.caption("↓ Відсортовано worst-first: спершу endpoint із крит-кроками без підтвердження виконання, "
                    "далі за к-стю атак-кроків.")
         # chart: top endpoints — blocked vs reached (crit-leak + safe)
         top = df.head(12).melt(id_vars=["Endpoint"],
-                               value_vars=["🟩 Блок", "🟥 Витік (крит)", "🟦 Безпеч. дійшло"],
+                               value_vars=["🟩 Блок", "🟥 Крит. без підтвердження", "🟦 Безпеч. дійшло"],
                                var_name="Результат", value_name="Кроків_")
         st.altair_chart(
             alt.Chart(top).mark_bar().encode(
                 x=alt.X("Кроків_:Q", title="Атак-кроків"),
                 y=alt.Y("Endpoint:N", sort="-x", title=None),
                 color=alt.Color("Результат:N", scale=alt.Scale(
-                    domain=["🟩 Блок", "🟥 Витік (крит)", "🟦 Безпеч. дійшло"],
+                    domain=["🟩 Блок", "🟥 Крит. без підтвердження", "🟦 Безпеч. дійшло"],
                     range=["#2ca02c", "#d62728", "#4c78a8"])),
                 tooltip=["Endpoint", "Результат", "Кроків_"]
             ).properties(height=340, title="Поверхня атаки по endpoint"),
@@ -714,7 +726,7 @@ with tabs[7]:
 
         sec = metrics.get("security_tests", {})
         if sec:
-            st.markdown("**Безпека та стійкість самої ЦІС** (з реальних прогонів)")
+            st.markdown("**Безпека та стійкість самої ЦІС**")
             def _mark(p):
                 return "✅" if p is True else ("—" if p is None else "⚠️")
             st.dataframe(pd.DataFrame([{
